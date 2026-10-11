@@ -9,13 +9,14 @@ from src.lib.season import get_season
 import logging
 
 def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True):
+  # Enable the FastF1 cache BEFORE the first load. Loading first made FastF1 fall back to its
+  # default cache (%LOCALAPPDATA%\Temp\fastf1), so every race was downloaded and stored twice.
+  enable_cache()
+
   print(f"Loading F1 {year} Round {round_number} Session '{session_type}'")
   session = load_session(year, round_number, session_type)
 
   print(f"Loaded session: {session.event['EventName']} - {session.event['RoundNumber']} - {session_type}")
-
-  # Enable cache for fastf1
-  enable_cache()
 
   if session_type == 'Q' or session_type == 'SQ':
 
@@ -106,7 +107,8 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
       session_info=session_info,
       session=session,
       enable_telemetry=True,
-      race_control_messages=race_telemetry.get('race_control_messages', [])
+      race_control_messages=race_telemetry.get('race_control_messages', []),
+      race_outcomes=race_telemetry.get('race_outcomes', {}),
     )
 
 if __name__ == "__main__":

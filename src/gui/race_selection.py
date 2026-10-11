@@ -44,9 +44,10 @@ class RaceSelectionWindow(QMainWindow):
         self.loading_session = False
         self.selected_session_title = None
         self.current_year = get_season()
-        self.selected_year=self.current_year 
+        self.selected_year=self.current_year
+        self._analysis_windows = []   # keep references so open analysis windows are not garbage-collected
 
-        self.setWindowTitle("F1 Race Replay - Session Selection")
+        self.setWindowTitle("PitwallOS - Session Selection")
         self._setup_ui()
         self.resize(1000, 700)
         self.setMinimumSize(800, 600)
@@ -61,7 +62,7 @@ class RaceSelectionWindow(QMainWindow):
 
         # Header (title)
         header_layout = QHBoxLayout()
-        header_label = QLabel("F1 Race Replay 🏎️")
+        header_label = QLabel("PitwallOS 🏎️")
         font = header_label.font()
         settings_btn = QPushButton("⚙ Settings")
         settings_btn.setCursor(Qt.PointingHandCursor)
@@ -73,6 +74,9 @@ class RaceSelectionWindow(QMainWindow):
         header_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         
         header_layout.addWidget(header_label)
+        subtitle_label = QLabel("Replay a race, or analyze it from the data lake")
+        subtitle_label.setStyleSheet("color: gray;")
+        header_layout.addWidget(subtitle_label)
         header_layout.addStretch()
         header_layout.addWidget(settings_btn)
         main_layout.addLayout(header_layout)
@@ -277,13 +281,56 @@ class RaceSelectionWindow(QMainWindow):
             label.setAlignment(Qt.AlignCenter)
             self.session_list_layout.addWidget(label)
         else:
+            hint = QLabel("Replay: watch it, with the live insight windows.\n"
+                          "Analyze: read it from the data lake, no replay needed.")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: gray; font-size: 11px;")
+            self.session_list_layout.addWidget(hint)
             for s in sessions:
                 if s in available_sessions:
-                    btn = QPushButton(s)
-                    btn.clicked.connect(
-                        lambda _, sname=s, e=ev: self._on_session_button_clicked(e, sname)
-                    )
-                    self.session_list_layout.addWidget(btn)
+                    self.session_list_layout.addWidget(self._session_row(ev, s))
+
+    def _session_row(self, ev, session_label):
+        """One session: its name, a Replay button, and for the race an Analyze button."""
+        row = QWidget()
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 6, 0, 6)
+        layout.setSpacing(4)
+        name = QLabel(session_label)
+        name_font = name.font()
+        name_font.setBold(True)
+        name.setFont(name_font)
+        layout.addWidget(name)
+
+        buttons = QHBoxLayout()
+        replay_btn = QPushButton("▶  Replay")
+        replay_btn.setToolTip("Watch the session in the replay window; the insights menu opens with it")
+        replay_btn.clicked.connect(lambda _, e=ev, sname=session_label: self._on_session_button_clicked(e, sname))
+        buttons.addWidget(replay_btn)
+        if session_label == "Race":
+            analyze_btn = QPushButton("📊  Analyze")
+            analyze_btn.setToolTip("Result, strategies and data quality, read from the data lake.\n"
+                                   "Builds the race into the lake first if it is not there yet.")
+            analyze_btn.clicked.connect(lambda _, e=ev: self._on_analyze_clicked(e))
+            buttons.addWidget(analyze_btn)
+        layout.addLayout(buttons)
+        return row
+
+    def _on_analyze_clicked(self, ev):
+        """Open the standalone Race Analysis window (src/gui/race_analysis_window.py) in this process."""
+        from src.gui.race_analysis_window import RaceAnalysisWindow
+        year = ev.get("year") or self.selected_year
+        try:
+            round_no = int(ev.get("round_number"))
+        except (TypeError, ValueError):
+            QMessageBox.critical(self, "Analyze", "This event has no round number.")
+            return
+        if year is None:
+            QMessageBox.critical(self, "Analyze", "Pick a year first.")
+            return
+        window = RaceAnalysisWindow(int(year), round_no, event_name=str(ev.get("event_name", "")))
+        window.show()
+        self._analysis_windows = [w for w in self._analysis_windows if w.isVisible()] + [window]
 
     def _on_session_button_clicked(self, ev, session_label):
         """Launch main.py in a separate process to run the selected session.

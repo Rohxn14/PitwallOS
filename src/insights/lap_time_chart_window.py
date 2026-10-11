@@ -190,6 +190,33 @@ def _entry_is_pit_entry(entry):
     return bool(entry.get("is_pit_entry"))
 
 
+def _count_tyre_changes(entries):
+    """
+    Pit stops = pit entries after which the tyres changed. A trip through the pit lane on the same
+    tyres (safety car led through the pit lane, drive-through or stop-go penalty) is not a stop.
+    Same rule as the data pipeline (src/pipeline/cleaner.py): the compound changes, or the tyre
+    age does not simply continue. If the next lap's tyres are unknown, the entry still counts.
+    """
+    by_lap = {e["lap"]: e for e in entries if e.get("lap") is not None}
+    stops = 0
+    for lap, entry in by_lap.items():
+        if not _entry_is_pit_entry(entry):
+            continue
+        nxt = by_lap.get(lap + 1)
+        if nxt is None:
+            stops += 1
+            continue
+        tyre, nxt_tyre = entry.get("tyre", -1), nxt.get("tyre", -1)
+        life, nxt_life = entry.get("tyre_life", 0) or 0, nxt.get("tyre_life", 0) or 0
+        if tyre is not None and nxt_tyre is not None and tyre >= 0 and nxt_tyre >= 0 and tyre != nxt_tyre:
+            stops += 1
+        elif life > 0 and nxt_life > 0:
+            stops += int(round(nxt_life) != round(life) + 1)
+        else:
+            stops += 1
+    return stops
+
+
 def _entry_is_pit_affected(entry, pit_threshold):
     explicit = entry.get("is_pit_affected")
     if explicit is not None:
@@ -1665,9 +1692,8 @@ class LapTimeChartWindow(PitWallWindow):
                     e["time_s"] for e in visible_data[code] 
                     if _is_clean_timed_entry(e, pit_threshold, sc_vsc_laps)
                 ]
-                # Count actual pit stops (group consecutive in/out laps)
-                pit_laps = [e["lap"] for e in visible_data[code] if _entry_is_pit_entry(e)]
-                drv_pit_stops = len(pit_laps)
+                # Count actual pit stops: tyre changes, not every trip through the pit lane
+                drv_pit_stops = _count_tyre_changes(visible_data[code])
                 
                 if drv_clean_times:
                     best = min(drv_clean_times)

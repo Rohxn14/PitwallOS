@@ -1,6 +1,7 @@
 import math
 import os
 import pickle
+import re
 import sys
 from datetime import timedelta, date
 from multiprocessing import Pool, cpu_count
@@ -10,6 +11,7 @@ import fastf1.plotting
 import numpy as np
 import pandas as pd
 
+from src.lib.running_order import STATE_NAMES, official_positions, race_outcomes, running_order
 from src.lib.settings import get_settings
 from src.lib.time import parse_time_string
 from src.lib.tyres import get_tyre_compound_int
@@ -27,8 +29,111 @@ def enable_cache():
     fastf1.Cache.enable_cache(cache_path)
 
 
+def _safe_file_name(text: str) -> str:
+    """Keep letters, digits, '.', '-' and '_'; everything else becomes '_'."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_")
+
+
+# Version of the computed replay data, per cache kind. Bump it when the frames change meaning:
+# the version is part of the file name, so an older cache is simply not found and is rebuilt.
+# race/sprint v2: the running order (positions, finished/retired state) comes from
+# src/lib/running_order.py; v1 froze finished cars at the line and sorted them by noise.
+CACHE_VERSIONS = {"race": 2, "sprint": 2}
+
+
+def _cache_base(session, cache_suffix: str) -> str:
+    folder = get_settings().computed_data_location
+    return os.path.join(folder, f"{_safe_file_name(str(session))}_{cache_suffix}_telemetry")
+
+
+def _cache_path(session, cache_suffix: str) -> str:
+    """Where the computed replay data for a session is cached (folder from settings)."""
+    version = CACHE_VERSIONS.get(cache_suffix, 1)
+    tag = f"_v{version}" if version > 1 else ""
+    return f"{_cache_base(session, cache_suffix)}{tag}.pkl"
+
+
+def _stale_cache_paths(session, cache_suffix: str) -> list:
+    """Caches of this session written by older versions: rebuilt data replaces them."""
+    version = CACHE_VERSIONS.get(cache_suffix, 1)
+    if version == 1:
+        return []
+    base = _cache_base(session, cache_suffix)
+    paths = [f"{base}.pkl"] + [f"{base}_v{v}.pkl" for v in range(2, version)]
+    return paths + [_legacy_cache_path(session, cache_suffix)]
+
+
+def _legacy_cache_path(session, cache_suffix: str) -> str:
+    """
+    The old cache name, kept only to migrate existing caches.
+
+    str(session) looks like "2026 Season Round 1: Australian Grand Prix - Race". On Windows (NTFS)
+    the ':' turns "<file>:<rest>" into a hidden alternate data stream of a 0-byte file, so the
+    cache took hundreds of MB that Explorer and `du` could not see.
+    """
+    return f"computed_data/{str(session).replace(' ', '_')}_{cache_suffix}_telemetry.pkl"
+
+
+def _load_cached(session, cache_suffix: str):
+    """
+    Cached replay data, or None.
+
+    A cache under the old hidden name is moved to the new one, but only while its kind is still
+    at version 1 (qualifying): an old race cache holds the old running order, so it is rebuilt.
+    """
+    if "--refresh-data" in sys.argv:
+        return None
+    path = _cache_path(session, cache_suffix)
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except FileNotFoundError:
+        pass
+
+    if CACHE_VERSIONS.get(cache_suffix, 1) > 1:
+        if any(os.path.exists(p) for p in _stale_cache_paths(session, cache_suffix)):
+            print("The cached replay data was built by an older version (running order); rebuilding it once.")
+        return None
+
+    legacy = _legacy_cache_path(session, cache_suffix)
+    if os.path.normpath(legacy) == os.path.normpath(path):
+        return None
+    try:
+        with open(legacy, "rb") as f:
+            data = pickle.load(f)
+    except (FileNotFoundError, OSError):
+        return None
+    print(f"Moving cached data from the old hidden location to {path}")
+    _save_cached(session, cache_suffix, data)
+    try:
+        os.remove(legacy)   # only after the new copy is safely written
+    except OSError as e:
+        print(f"Could not remove the old cache {legacy}: {e}")
+    return data
+
+
+def _save_cached(session, cache_suffix: str, data) -> None:
+    path = _cache_path(session, cache_suffix)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)    # a crash mid-write never leaves a truncated cache behind
+
+    # Only now that the new cache is safely on disk: drop the copies it replaces (300-450 MB each)
+    for stale in _stale_cache_paths(session, cache_suffix):
+        if os.path.normpath(stale) == os.path.normpath(path) or not os.path.exists(stale):
+            continue
+        try:
+            os.remove(stale)
+            print(f"Removed the outdated replay cache {stale}")
+        except OSError as e:
+            print(f"Could not remove the outdated replay cache {stale}: {e}")
+
+
 FPS = 25
 DT = 1 / FPS
+END_HOLD_S = 2.0   # the replay runs this long past the last car's finish (see get_race_telemetry)
 
 
 def _process_single_driver(args):
@@ -48,6 +153,7 @@ def _process_single_driver(args):
     y_all = []
     race_dist_all = []
     rel_dist_all = []
+    progress_all = []
     lap_numbers = []
     tyre_compounds = []
     tyre_life_all = []
@@ -99,6 +205,10 @@ def _process_single_driver(args):
         y_all.append(y_lap)
         race_dist_all.append(race_d_lap)
         rel_dist_all.append(rd_lap)
+        # Race progress in laps (laps done + fraction of this one). Built per sample, BEFORE
+        # resampling: it is continuous across the line, unlike lap number and in-lap distance,
+        # which jump there and interpolate into nonsense between two samples.
+        progress_all.append((lap_number - 1) + rd_lap)
         lap_numbers.append(np.full_like(t_lap, lap_number))
         tyre_compounds.append(np.full_like(t_lap, tyre_compund_as_int))
         tyre_life_all.append(np.full_like(t_lap, tyre_life))
@@ -128,6 +238,7 @@ def _process_single_driver(args):
 
     throttle_all = np.concatenate(throttle_all)[order]
     brake_all = np.concatenate(brake_all)[order]
+    progress_all = np.concatenate(progress_all)[order]
 
     print(f"Completed telemetry for driver: {driver_code}")
 
@@ -147,6 +258,7 @@ def _process_single_driver(args):
             "drs": drs_all,
             "throttle": throttle_all,
             "brake": brake_all,
+            "progress": progress_all,
         },
         "t_min": t_all.min(),
         "t_max": t_all.max(),
@@ -547,22 +659,14 @@ def _compute_safety_car_positions(frames, track_statuses, session):
 
 
 def get_race_telemetry(session, session_type="R"):
-    event_name = str(session).replace(" ", "_")
     cache_suffix = "sprint" if session_type == "S" else "race"
 
     # Check if this data has already been computed
-
-    try:
-        if "--refresh-data" not in sys.argv:
-            with open(
-                f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "rb"
-            ) as f:
-                frames = pickle.load(f)
-                print(f"Loaded precomputed {cache_suffix} telemetry data.")
-                print("The replay should begin in a new window shortly!")
-                return frames
-    except FileNotFoundError:
-        pass  # Need to compute from scratch
+    cached = _load_cached(session, cache_suffix)
+    if cached is not None:
+        print(f"Loaded precomputed {cache_suffix} telemetry data.")
+        print("The replay should begin in a new window shortly!")
+        return cached
 
     drivers = session.drivers
 
@@ -606,8 +710,22 @@ def get_race_telemetry(session, session_type="R"):
     if global_t_min is None or global_t_max is None:
         raise ValueError("No valid telemetry data found for any driver")
 
-    # 2. Create a timeline (start from zero)
-    timeline = np.arange(global_t_min, global_t_max, DT) - global_t_min
+    # How each driver's race ended: finish or stop time, official result (src/lib/running_order.py)
+    try:
+        results_df = session.results
+    except Exception:
+        results_df = None
+    outcomes = race_outcomes(
+        session.laps, results_df, global_t_min,
+        fallback_end={code: float(data["t"].max() - global_t_min) for code, data in driver_data.items()},
+    )
+
+    # 2. Create a timeline (start from zero). It runs a moment past the last car's finish: the
+    # telemetry stops at the line, a fraction of a second too early for the final frames to show
+    # the official classification.
+    last_end = max((o.ended_at for o in outcomes.values() if o.ended_at is not None), default=0.0)
+    timeline_end = min(max(global_t_max, global_t_min + last_end + END_HOLD_S), global_t_max + 60.0)
+    timeline = np.arange(global_t_min, timeline_end, DT) - global_t_min
 
     # 3. Resample each driver's telemetry (x, y) onto the common timeline
     resampled_data = {}
@@ -634,13 +752,16 @@ def get_race_telemetry(session, session_type="R"):
             data["drs"][order],
             data["throttle"][order],
             data["brake"][order],
+            data["progress"][order],
         ]
 
         resampled = [np.interp(timeline, t_sorted, arr) for arr in arrays_to_resample]
         x_resampled, y_resampled, dist_resampled, rel_dist_resampled, lap_resampled, \
-        tyre_resampled, tyre_life_resampled, speed_resampled, gear_resampled, drs_resampled, throttle_resampled, brake_resampled = resampled
- 
+        tyre_resampled, tyre_life_resampled, speed_resampled, gear_resampled, drs_resampled, throttle_resampled, brake_resampled, \
+        progress_resampled = resampled
+
         resampled_data[code] = {
+            "progress": progress_resampled,   # race progress in laps, for the running order fallback
             "t": timeline,
             "x": x_resampled,
             "y": y_resampled,
@@ -783,21 +904,24 @@ def get_race_telemetry(session, session_type="R"):
 
     for driver_no in drivers:
         drv=session.get_driver(driver_no)["Abbreviation"]
-        driver_laps=laps.pick_drivers(drv)
+        driver_laps=laps.pick_drivers(drv).sort_values("LapNumber")
         windows=[]
 
-        for _, lap in driver_laps.iterrows():
-            pit_in=lap.get("PitInTime")
-            pit_out=lap.get("PitOutTime")
-
-            if pd.notna(pit_in):
-                start=pit_in.total_seconds()
-                if pd.notna(pit_out):
-                    end=pit_out.total_seconds()
-                else:
-                    end=start+40 #Error Rare case
-                
-                windows.append((start,end))
+        # FastF1 records pit ENTRY on the in-lap and pit EXIT on the following lap (the out-lap),
+        # so the exit time comes from the next row, not the same one.
+        pit_ins = driver_laps["PitInTime"].tolist()
+        pit_outs = driver_laps["PitOutTime"].tolist()
+        lap_numbers = driver_laps["LapNumber"].tolist()
+        for i, pit_in in enumerate(pit_ins):
+            if pd.isna(pit_in):
+                continue
+            start = pit_in.total_seconds()
+            end = float("inf")   # never came back out (retired in the pits): in the pit to the end
+            if i + 1 < len(pit_outs) and lap_numbers[i + 1] == lap_numbers[i] + 1:
+                pit_out = pit_outs[i + 1]
+                if pd.notna(pit_out) and pit_out.total_seconds() > start:
+                    end = pit_out.total_seconds()
+            windows.append((start, end))
         pit_windows[drv]=windows
     
     #Adjusting pit windows to the telemetry timeline
@@ -810,52 +934,40 @@ def get_race_telemetry(session, session_type="R"):
     
     print("PIT WINDOWS: ", pit_windows)
 
-    # 5. Build the frames + LIVE LEADERBOARD
+    # 4.3 Running order: who is P1..PN at every frame, and whose race is over.
+    # The rules (official timing positions, finished / retired, final classification) live in
+    # src/lib/running_order.py; this only feeds them the session's data.
+    codes = list(resampled_data.keys())
+    number_to_code = {str(num): code for num, code in driver_codes.items()}
+    stream = _official_timing_stream(session)
+    official = None
+    if stream is not None:
+        official = official_positions(stream, number_to_code, codes, timeline + global_t_min)
+        if np.isnan(official).all():
+            official = None
+    progress = np.vstack([resampled_data[code]["progress"] for code in codes])
+    positions, race_states = running_order(timeline, codes, outcomes, progress, official)
+    order_source = "official timing" if official is not None else "telemetry progress"
+    n_finished = sum(1 for o in outcomes.values() if o.took_flag)
+    print(f"Running order from {order_source}: {n_finished} finished, {len(outcomes) - n_finished} did not")
+    by_place = np.argsort(positions, axis=0)     # by_place[k, i] = driver in place k + 1 at frame i
+
+    # 5. Build the frames (drivers inserted in running order, P1 first)
     frames = []
     num_frames = len(timeline)
-
-    # Pre-extract data references for faster access
-    driver_codes = list(resampled_data.keys())
-    driver_arrays = {code: resampled_data[code] for code in driver_codes}
+    driver_arrays = [resampled_data[code] for code in codes]
 
     for i in range(num_frames):
         t = timeline[i]
-        snapshot = []
-        for code in driver_codes:
-            d = driver_arrays[code]
-            snapshot.append({
-                "code": code,
-                "dist": float(d["dist"][i]),
-                "x": float(d["x"][i]),
-                "y": float(d["y"][i]),
-                "lap": int(round(d["lap"][i])),
-                "rel_dist": float(d["rel_dist"][i]),
-                "tyre": float(d["tyre"][i]),
-                "tyre_life": float(d["tyre_life"][i]),
-                "speed": float(d['speed'][i]),
-                "gear": int(d['gear'][i]),
-                "drs": int(d['drs'][i]),
-                "throttle": float(d['throttle'][i]),
-                "brake": float(d['brake'][i]),
-            })
-
-        # If for some reason we have no drivers at this instant
-        if not snapshot:
-            continue
-
-        # 5b. Sort by race distance to get POSITIONS (1–20)
-        # Leader = largest race distance covered
-        snapshot.sort(key=lambda r: (r.get("lap", 0), r["dist"]), reverse=True)
-
-        leader = snapshot[0]
-        leader_lap = leader["lap"]
-
-        # 5c. Prepare frame data
         frame_data = {}
+        leader_lap = 1
 
-        for idx, car in enumerate(snapshot):
-            code = car["code"]
-            position = idx + 1
+        for place, di in enumerate(by_place[:, i]):
+            code = codes[di]
+            d = driver_arrays[di]
+            lap = int(round(d["lap"][i]))
+            if place == 0:
+                leader_lap = lap
 
             #Pit stop detection
             in_pit=False
@@ -863,22 +975,23 @@ def get_race_telemetry(session, session_type="R"):
                 if start<=t<=end:
                     in_pit=True
                     break
-            
+
             # include speed, gear, drs_active in frame driver dict
             frame_data[code] = {
-                "x": car["x"],
-                "y": car["y"],
-                "dist": car["dist"],
-                "lap": car["lap"],
-                "rel_dist": round(car["rel_dist"], 4),
-                "tyre": car["tyre"],
-                "tyre_life": car["tyre_life"],
-                "position": position,
-                "speed": car["speed"],
-                "gear": car["gear"],
-                "drs": car["drs"],
-                "throttle": car["throttle"],
-                "brake": car["brake"],
+                "x": float(d["x"][i]),
+                "y": float(d["y"][i]),
+                "dist": float(d["dist"][i]),
+                "lap": lap,
+                "rel_dist": round(float(d["rel_dist"][i]), 4),
+                "tyre": float(d["tyre"][i]),
+                "tyre_life": float(d["tyre_life"][i]),
+                "position": place + 1,
+                "race_state": STATE_NAMES[race_states[di, i]],   # running / finished / retired / disqualified
+                "speed": float(d['speed'][i]),
+                "gear": int(d['gear'][i]),
+                "drs": int(d['drs'][i]),
+                "throttle": float(d['throttle'][i]),
+                "brake": float(d['brake'][i]),
                 "in_pit": in_pit
             }
 
@@ -922,31 +1035,42 @@ def get_race_telemetry(session, session_type="R"):
     _compute_safety_car_positions(frames, formatted_track_statuses, session)
     print("completed telemetry extraction...")
     print("Saving to cache file...")
-    # If computed_data/ directory doesn't exist, create it
-    if not os.path.exists("computed_data"):
-        os.makedirs("computed_data")
-
-    # Save using pickle (10-100x faster than JSON)
-    with open(f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "wb") as f:
-        pickle.dump({
-            "frames": frames,
-            "driver_colors": get_driver_colors(session),
-            "track_statuses": formatted_track_statuses,
-            "race_control_messages": formatted_rc_messages,
-            "total_laps": int(max_lap_number),
-            "max_tyre_life": max_tyre_life_map,
-        }, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    print("Saved Successfully!")
-    print("The replay should begin in a new window shortly")
-    return {
+    computed = {
         "frames": frames,
         "driver_colors": get_driver_colors(session),
         "track_statuses": formatted_track_statuses,
         "race_control_messages": formatted_rc_messages,
         "total_laps": int(max_lap_number),
         "max_tyre_life": max_tyre_life_map,
+        # How each driver's race ended (finish/stop time, official result and gaps), for the HUD
+        "race_outcomes": {code: o.to_dict() for code, o in outcomes.items()},
+        "running_order_source": order_source,
+        "t0_session_s": float(global_t_min),     # replay t = session time - t0_session_s
     }
+    # Save using pickle (10-100x faster than JSON)
+    _save_cached(session, cache_suffix, computed)
+
+    print("Saved Successfully!")
+    print("The replay should begin in a new window shortly")
+    return computed
+
+
+def _official_timing_stream(session):
+    """
+    The official timing-tower positions over time (FastF1 timing stream), or None.
+
+    It comes from FastF1's private `_extended_timing_data` (the replay's lap-time code already
+    relies on it) and is read from the FastF1 cache, so it costs no download.
+    """
+    try:
+        import fastf1._api as ffapi
+        _, stream, _ = ffapi._extended_timing_data(session.api_path)
+    except Exception as e:
+        print(f"Running order: no official timing stream ({e}); using telemetry progress")
+        return None
+    if stream is None or len(stream) == 0 or not {"Time", "Driver", "Position"}.issubset(stream.columns):
+        return None
+    return stream
 
 
 def get_qualifying_results(session):
@@ -1338,21 +1462,14 @@ def get_quali_telemetry(session, session_type="Q"):
     #   }
     # }
 
-    event_name = str(session).replace(" ", "_")
     cache_suffix = "sprintquali" if session_type == "SQ" else "quali"
 
     # Check if this data has already been computed
-    try:
-        if "--refresh-data" not in sys.argv:
-            with open(
-                f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "rb"
-            ) as f:
-                data = pickle.load(f)
-                print(f"Loaded precomputed {cache_suffix} telemetry data.")
-                print("The replay should begin in a new window shortly!")
-                return data
-    except FileNotFoundError:
-        pass  # Need to compute from scratch
+    cached = _load_cached(session, cache_suffix)
+    if cached is not None:
+        print(f"Loaded precomputed {cache_suffix} telemetry data.")
+        print("The replay should begin in a new window shortly!")
+        return cached
 
     qualifying_results = get_qualifying_results(session)
 
@@ -1387,22 +1504,13 @@ def get_quali_telemetry(session, session_type="Q"):
         if result["min_speed"] < min_speed or min_speed == 0.0:
             min_speed = result["min_speed"]
 
-    # Save to the compute_data directory
-
-    if not os.path.exists("computed_data"):
-        os.makedirs("computed_data")
-
-    with open(f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "wb") as f:
-        pickle.dump(
-            {
-                "results": qualifying_results,
-                "telemetry": telemetry_data,
-                "max_speed": max_speed,
-                "min_speed": min_speed,
-            },
-            f,
-            protocol=pickle.HIGHEST_PROTOCOL,
-        )
+    # Save to the computed-data cache
+    _save_cached(session, cache_suffix, {
+        "results": qualifying_results,
+        "telemetry": telemetry_data,
+        "max_speed": max_speed,
+        "min_speed": min_speed,
+    })
 
     return {
         "results": qualifying_results,

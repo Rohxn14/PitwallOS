@@ -19,6 +19,11 @@ class TelemetryStreamServer:
     self.clients_lock = threading.Lock()
     self.server_socket = None
     self.running = False
+    # Fields that never change during a session (e.g. the lap-time table). They are sent once to
+    # each client, merged into the first message it receives, instead of in every message:
+    # re-sending a ~600 KB table ~60 times a second throttled the whole replay to ~8 updates/s.
+    self._static = {}
+    self._needs_static = set()
 
   def start(self):
     self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -34,6 +39,7 @@ class TelemetryStreamServer:
         print(f"Client connected from {addr}")
         with self.clients_lock:
           self.clients.append(client_socket)
+          self._needs_static.add(client_socket)
         threading.Thread(target=self.handle_client, args=(client_socket,), daemon=True).start()
       except Exception as e:
         if self.running:
@@ -53,17 +59,35 @@ class TelemetryStreamServer:
           self.clients.remove(client_socket)
         except ValueError:
           pass  # Already removed by broadcast() or stop()
+        self._needs_static.discard(client_socket)
+
+  def set_static(self, fields):
+    """Fields sent once per client (with its first message) rather than in every broadcast."""
+    with self.clients_lock:
+      self._static = dict(fields)
+      self._needs_static = set(self.clients)   # everyone gets the new values once
 
   def broadcast(self, data):
-    message = json.dumps(data).encode('utf-8')
+    message = json.dumps(data).encode('utf-8') + b'\n'
+    full_message = None   # data + static fields, encoded only when some client still needs them
     dead_clients = []
+    with self.clients_lock:
+      needs_static = set(self._needs_static)
+      static = self._static
     
     with self.clients_lock:
       clients_copy = list(self.clients)
     
     for client in clients_copy:
       try:
-        client.sendall(message + b'\n')
+        if client in needs_static and static:
+          if full_message is None:
+            full_message = json.dumps({**data, **static}).encode('utf-8') + b'\n'
+          client.sendall(full_message)
+          with self.clients_lock:
+            self._needs_static.discard(client)
+        else:
+          client.sendall(message)
       except Exception as e:
         print(f"Error sending to client: {e}")
         client.close()
@@ -74,6 +98,7 @@ class TelemetryStreamServer:
         for client in dead_clients:
           if client in self.clients:
             self.clients.remove(client)
+          self._needs_static.discard(client)
   
   def stop(self):
     self.running = False

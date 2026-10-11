@@ -10,7 +10,7 @@ from src.insights.telemetry_stream_viewer import main as telemetry_viewer_main
 def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
                       playback_speed=1.0, driver_colors=None, circuit_rotation=0.0, total_laps=None,
                       visible_hud=True, ready_file=None, session_info=None, session=None,
-                      enable_telemetry=True, race_control_messages=None):
+                      enable_telemetry=True, race_control_messages=None, race_outcomes=None):
     window = F1RaceReplayWindow(
         frames=frames,
         track_statuses=track_statuses,
@@ -25,7 +25,8 @@ def run_arcade_replay(frames, track_statuses, example_lap, drivers, title,
         session_info=session_info,
         session=session,
         enable_telemetry=enable_telemetry,
-        race_control_messages=race_control_messages
+        race_control_messages=race_control_messages,
+        race_outcomes=race_outcomes,
     )
     # Signal readiness to parent process (if requested) after window created
     if ready_file:
@@ -46,7 +47,7 @@ def launch_telemetry_viewer():
       subprocess.run([sys.executable, "-m", "src.insights.telemetry_stream_viewer"], check=False)
     except Exception as e:
       print(f"Failed to launch telemetry viewer: {e}")
-  
+
   viewer_thread = threading.Thread(target=start_viewer, daemon=True)
   viewer_thread.start()
 
@@ -59,6 +60,6 @@ def launch_insights_menu():
       subprocess.run([sys.executable, "-m", "src.gui.insights_menu"], check=False)
     except Exception as e:
       print(f"Failed to launch insights menu: {e}")
-  
+
   menu_thread = threading.Thread(target=start_menu, daemon=True)
   menu_thread.start()

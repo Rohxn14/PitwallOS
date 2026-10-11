@@ -1,0 +1,160 @@
+{
+  "season": 2024,
+  "round": 23,
+  "session": "R",
+  "event_name": "Qatar Grand Prix",
+  "location": "Lusail",
+  "country": "Qatar",
+  "event_date": "2024-12-01 00:00:00",
+  "total_laps": 57,
+  "session_start_sec": 3289.896,
+  "driver_count": 20,
+  "ingested_at_utc": "2026-10-05T07:24:28+00:00",
+  "fastf1_version": "3.8.3",
+  "warnings": [],
+  "tables": {
+    "laps": {
+      "rows": 943,
+      "bytes": 86999,
+      "columns": [
+        "Time",
+        "Driver",
+        "DriverNumber",
+        "LapTime",
+        "LapNumber",
+        "Stint",
+        "PitOutTime",
+        "PitInTime",
+        "Sector1Time",
+        "Sector2Time",
+        "Sector3Time",
+        "Sector1SessionTime",
+        "Sector2SessionTime",
+        "Sector3SessionTime",
+        "SpeedI1",
+        "SpeedI2",
+        "SpeedFL",
+        "SpeedST",
+        "IsPersonalBest",
+        "Compound",
+        "TyreLife",
+        "FreshTyre",
+        "Team",
+        "LapStartTime",
+        "LapStartDate",
+        "TrackStatus",
+        "Position",
+        "Deleted",
+        "DeletedReason",
+        "FastF1Generated",
+        "IsAccurate"
+      ]
+    },
+    "car_telemetry": {
+      "rows": 688260,
+      "bytes": 6023222,
+      "columns": [
+        "DriverNumber",
+        "Date",
+        "RPM",
+        "Speed",
+        "nGear",
+        "Throttle",
+        "Brake",
+        "DRS",
+        "Source",
+        "Time",
+        "SessionTime"
+      ]
+    },
+    "pos_telemetry": {
+      "rows": 697926,
+      "bytes": 6328488,
+      "columns": [
+        "DriverNumber",
+        "Date",
+        "Status",
+        "X",
+        "Y",
+        "Z",
+        "Source",
+        "Time",
+        "SessionTime"
+      ]
+    },
+    "weather": {
+      "rows": 151,
+      "bytes": 7876,
+      "columns": [
+        "Time",
+        "AirTemp",
+        "Humidity",
+        "Pressure",
+        "Rainfall",
+        "TrackTemp",
+        "WindDirection",
+        "WindSpeed"
+      ]
+    },
+    "track_status": {
+      "rows": 24,
+      "bytes": 2954,
+      "columns": [
+        "Time",
+        "Status",
+        "Message"
+      ]
+    },
+    "race_control": {
+      "rows": 113,
+      "bytes": 8836,
+      "columns": [
+        "Time",
+        "Category",
+        "Message",
+        "Status",
+        "Flag",
+        "Scope",
+        "Sector",
+        "RacingNumber",
+        "Lap"
+      ]
+    },
+    "results": {
+      "rows": 20,
+      "bytes": 15810,
+      "columns": [
+        "DriverNumber",
+        "BroadcastName",
+        "Abbreviation",
+        "DriverId",
+        "TeamName",
+        "TeamColor",
+        "TeamId",
+        "FirstName",
+        "LastName",
+        "FullName",
+        "HeadshotUrl",
+        "CountryCode",
+        "Position",
+        "ClassifiedPosition",
+        "GridPosition",
+        "Q1",
+        "Q2",
+        "Q3",
+        "Time",
+        "Status",
+        "Points",
+        "Laps"
+      ]
+    },
+    "session_status": {
+      "rows": 5,
+      "bytes": 2267,
+      "columns": [
+        "Time",
+        "Status"
+      ]
+    }
+  }
+}

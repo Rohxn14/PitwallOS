@@ -19,6 +19,7 @@ from src.ui_components import (
 )
 from src.tyre_degradation_integration import TyreDegradationIntegrator
 from src.services.stream import TelemetryStreamServer
+from src.lib.running_order import outcome_from_dict
 
 
 SCREEN_WIDTH = 1280
@@ -31,10 +32,14 @@ class F1RaceReplayWindow(arcade.Window):
                  playback_speed=1.0, driver_colors=None, circuit_rotation=0.0,
                  left_ui_margin=340, right_ui_margin=260, total_laps=None, visible_hud=True,
                  session_info=None, session=None, enable_telemetry=False,
-                 race_control_messages=None):
+                 race_control_messages=None, race_outcomes=None):
         # Set resizable to True so the user can adjust mid-sim
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
         self.maximize()
+
+        # How each driver's race ended (src/lib/running_order.py). The running order itself is
+        # in every frame ("position", "race_state"); this adds the official finishing gaps.
+        self.race_outcomes = {code: outcome_from_dict(d) for code, d in (race_outcomes or {}).items()}
 
         self.telemetry_stream = None
         if enable_telemetry:
@@ -58,6 +63,11 @@ class F1RaceReplayWindow(arcade.Window):
         self.playback_speed = PLAYBACK_SPEEDS[PLAYBACK_SPEEDS.index(playback_speed)] if playback_speed in PLAYBACK_SPEEDS else 1.0
         self.driver_colors = driver_colors or {}
         self.frame_index = 0.0  # use float for fractional-frame accumulation
+        # Seek signal for stream consumers: goes up by one whenever the playhead moves by anything
+        # other than normal playback (hold-to-seek, progress-bar click, restart). Charts in other
+        # windows use it to break their lines instead of guessing seeks from timing.
+        self.timeline_epoch = 0
+        self._frame_continuity = 0.0   # where playback alone would have left the playhead
         self.paused = False
         self.total_laps = total_laps
         self.has_weather = any("weather" in frame for frame in frames) if frames else False
@@ -234,6 +244,11 @@ class F1RaceReplayWindow(arcade.Window):
         if not hasattr(self, 'telemetry_stream') or not self.telemetry_stream:
             return
             
+        # A key handler (restart, play after a paused seek) may broadcast after moving the playhead
+        if self.frame_index != getattr(self, "_frame_continuity", self.frame_index):
+            self.timeline_epoch = getattr(self, "timeline_epoch", 0) + 1
+        self._frame_continuity = self.frame_index
+
         current_frame = self.frames[min(int(self.frame_index), len(self.frames) - 1)] if self.frames else None
         
         # Get current track status
@@ -266,7 +281,7 @@ class F1RaceReplayWindow(arcade.Window):
                     pos["fraction"] = 0.0
                 
             if driver_progress:
-                leader_code = max(driver_progress.keys(), key=lambda c: driver_progress[c])
+                leader_code = self._leader_of(current_frame, driver_progress)
                 leader_lap = current_frame["drivers"][leader_code].get("lap", 1)
         
         # Format time
@@ -299,6 +314,7 @@ class F1RaceReplayWindow(arcade.Window):
             "track_status": current_track_status,
             "playback_speed": self.playback_speed,
             "is_paused": self.paused,
+            "timeline_epoch": self.timeline_epoch,
             "total_frames": self.n_frames,
             "circuit_length_m": self.circuit_length_m,
             "driver_colors": hex_driver_colors,
@@ -325,13 +341,24 @@ class F1RaceReplayWindow(arcade.Window):
                 "rotation_deg": self.circuit_rotation,
             }
 
-        # Send pre-computed data continuously. It's just a Python dictionary reference 
-        # (O(1) memory overhead in local publish/subscribe) and ensures windows 
-        # opened after the race has finished still receive the data.
-        payload["lap_times"] = self._precomputed_lap_times
-        payload["status_laps"] = self._precomputed_status_laps
+        # Pre-computed tables never change during the session, so the server sends them once to each
+        # client (merged into its first message) instead of in every message. Windows opened later,
+        # even after the race has finished, still receive them with their first message.
+        if not getattr(self, "_static_published", False):
+            self.telemetry_stream.set_static({
+                "lap_times": self._precomputed_lap_times,
+                "status_laps": self._precomputed_status_laps,
+            })
+            self._static_published = True
 
         self.telemetry_stream.broadcast(payload)
+
+    @staticmethod
+    def _leader_of(frame, driver_progress):
+        """P1 of the frame's running order; the most progressed car only if a frame has no order."""
+        drivers = frame["drivers"]
+        leader = next((code for code, pos in drivers.items() if pos.get("position") == 1), None)
+        return leader if leader is not None else max(driver_progress, key=lambda c: driver_progress[c])
 
     @staticmethod
     def _compute_lap_times(frames, session=None):
@@ -1469,13 +1496,14 @@ class F1RaceReplayWindow(arcade.Window):
 
             driver_progress[code] = progress_m
 
-        # Leader is the one with greatest progress_m
+        # Leader: P1 of the frame's running order (src/lib/running_order.py)
         if driver_progress:
-            leader_code = max(driver_progress, key=lambda c: driver_progress[c])
+            leader_code = self._leader_of(frame, driver_progress)
             leader_lap = frame["drivers"][leader_code].get("lap", 1)
         else:
             leader_code = None
             leader_lap = 1
+        leader_finished = bool(leader_code) and frame["drivers"][leader_code].get("race_state") == "finished"
 
         # Time Calculation
         t = frame["t"]
@@ -1508,6 +1536,11 @@ class F1RaceReplayWindow(arcade.Window):
             elif current_track_status == "4":
                 self.status_text.text = "SAFETY CAR"
                 self.status_text.color = arcade.color.BROWN
+            # Once the leader has taken the flag, that is the news (a yellow for a car stopped on
+            # the cool-down lap is not)
+            if leader_finished:
+                self.status_text.text = "CHEQUERED FLAG"
+                self.status_text.color = arcade.color.WHITE
 
             self.lap_text.draw()
             self.time_text.draw()
@@ -1521,16 +1554,16 @@ class F1RaceReplayWindow(arcade.Window):
         # optionally expose weather_bottom for driver info layout
         self.weather_bottom = self.height - 170 - 130 if (weather_info or self.has_weather) else None
 
-        # Draw leaderboard via component
+        # Draw leaderboard via component, in the frame's running order (progress only for gaps)
         driver_list = []
         for code, pos in frame["drivers"].items():
             color = self.driver_colors.get(code, arcade.color.WHITE)
             progress_m = driver_progress.get(code, float(pos.get("dist", 0.0)))
             driver_list.append((code, color, pos, progress_m))
-        driver_list.sort(key=lambda x: x[3], reverse=True)
+        driver_list.sort(key=lambda x: (x[2].get("position", 999), -x[3]))
 
         self.last_leaderboard_order = [c for c, _, _, _ in driver_list]
-        self.leaderboard_comp.set_entries(driver_list)
+        self.leaderboard_comp.set_entries(driver_list, outcomes=self.race_outcomes)
         self.leaderboard_comp.draw(self)
         # expose rects for existing hit test compatibility if needed
         self.leaderboard_rects = self.leaderboard_comp.rects
@@ -1570,10 +1603,14 @@ class F1RaceReplayWindow(arcade.Window):
         if self.paused:
             return
 
+        # Anything that moved the playhead since the last broadcast was a seek, not playback
+        if self.frame_index != self._frame_continuity:
+            self.timeline_epoch += 1
         self.frame_index += delta_time * FPS * self.playback_speed
         
         if self.frame_index >= self.n_frames:
             self.frame_index = float(self.n_frames - 1)
+        self._frame_continuity = self.frame_index
             
         # Broadcast telemetry state during playback
         self._broadcast_telemetry_state()

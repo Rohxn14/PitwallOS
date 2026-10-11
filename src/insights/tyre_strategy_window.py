@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QFont, QPainter, QColor, QPen, QBrush, QLinearGradient
 from PySide6.QtCore import Qt, QRect, QTimer
 from src.gui.pit_wall_window import PitWallWindow
+from src.insights.tyre_history import TyreHistory
 
 
 TYRE_COLOURS = {
@@ -177,16 +178,16 @@ class TyreStrategyWindow(PitWallWindow):
 
     def __init__(self):
         # attrs FIRST — super().__init__() calls setup_ui() immediately
-        self.stints      = {}
-        self.prev_tyres  = {}
+        # Per driver: which tyre was on each lap. Stints are derived from it on every redraw, so a
+        # rewind (which forgets later laps) can never leave stints from the "future" on screen.
+        # Nothing is saved to disk: the stream carries no session identity, so saved state used
+        # to leak from one race into the next.
+        self.histories: dict[str, TyreHistory] = {}
         self.positions   = {}
         self.total_laps  = 60
         self.current_lap = 1
         self._row_widgets: dict[str, StintBar] = {}
         self._redraw_pending = False
-
-        # Load persisted state if exists
-        self._load_state()
 
         super().__init__()
         self.setWindowTitle("F1 Tyre Strategy")
@@ -201,49 +202,20 @@ class TyreStrategyWindow(PitWallWindow):
 
     # ------------------------------------------------------------------ State --
 
-    def _load_state(self):
-        try:
-            import json, os
-            if os.path.exists("computed_data/tyre_state.json"):
-                with open("computed_data/tyre_state.json") as f:
-                    saved = json.load(f)
-                    self.stints      = saved.get("stints", {})
-                    self.positions   = saved.get("positions", {})
-                    self.prev_tyres  = saved.get("prev_tyres", {})
-                    self.current_lap = saved.get("current_lap", 1)
-                    self.total_laps  = saved.get("total_laps", 60)
-                    print("Tyre state loaded successfully.")
-        except FileNotFoundError:
-            print("No saved tyre state found. Starting fresh.")
-        except json.JSONDecodeError:
-            print("Saved tyre state corrupted. Starting fresh.")
-        except Exception as e:
-            print(f"Failed to load tyre state: {e}")
+    def _reset_state(self):
+        """Forget the previous connection's race and remove its rows."""
+        self.histories.clear()
+        self.positions.clear()
+        self.current_lap = 1
+        for bar in self._row_widgets.values():
+            self.rows_layout.removeWidget(bar)
+            bar.deleteLater()
+        self._row_widgets.clear()
+        self._redraw_pending = True
 
-    def _save_state(self):
-        try:
-            import json, os
-            if not os.path.exists("computed_data"):
-                os.makedirs("computed_data")
-            with open("computed_data/tyre_state.json", "w") as f:
-                json.dump({
-                    "stints":      self.stints,
-                    "positions":   self.positions,
-                    "prev_tyres":  self.prev_tyres,
-                    "current_lap": self.current_lap,
-                    "total_laps":  self.total_laps,
-                }, f)
-            print("Tyre state saved successfully.")
-        except PermissionError:
-            print("Permission denied saving tyre state.")
-        except OSError as e:
-            print(f"OS error saving tyre state: {e}")
-        except Exception as e:
-            print(f"Failed to save tyre state: {e}")
-
-    def closeEvent(self, event):
-        self._save_state()
-        super().closeEvent(event)
+    def on_connection_status_changed(self, status):
+        if status != "Connected":
+            self._reset_state()
 
     # ------------------------------------------------------------------ UI --
 
@@ -349,23 +321,17 @@ class TyreStrategyWindow(PitWallWindow):
     # --------------------------------------------------------- Telemetry ---
 
     def on_telemetry_data(self, data):
-        if "frame" not in data:
+        frame = data.get("frame")
+        if not frame:
             return
-
-        frame   = data["frame"]
         drivers = frame.get("drivers", {})
 
         sess = data.get("session_data", {})
         if sess.get("total_laps"):
-            new_total = int(sess["total_laps"])
-            if new_total != self.total_laps and self.current_lap <= 2:
-                print("New session detected. Wiping old tyre state.")
-                self.stints     = {}
-                self.prev_tyres = {}
-                self.positions  = {}
-            self.total_laps = new_total
+            self.total_laps = int(sess["total_laps"])
 
-        self.current_lap = int(frame.get("lap", self.current_lap))
+        if frame.get("lap") is not None:
+            self.current_lap = int(frame["lap"])
 
         for code, driver in drivers.items():
             tyre = driver.get("tyre")
@@ -380,14 +346,9 @@ class TyreStrategyWindow(PitWallWindow):
             if tyre is None or lap is None or not isinstance(tyre, (int, float)) or tyre == 0.0:
                 continue
 
-            lap = int(lap)
-            if code not in self.stints:
-                self.stints[code]     = [{"tyre": tyre, "start_lap": lap, "end_lap": None}]
-                self.prev_tyres[code] = tyre
-            elif tyre != self.prev_tyres[code]:
-                self.stints[code][-1]["end_lap"] = lap - 1
-                self.stints[code].append({"tyre": tyre, "start_lap": lap, "end_lap": None})
-                self.prev_tyres[code] = tyre
+            if code not in self.histories:
+                self.histories[code] = TyreHistory()
+            self.histories[code].observe(int(lap), tyre, driver.get("tyre_life"))
 
         self._redraw_pending = True
 
@@ -401,22 +362,23 @@ class TyreStrategyWindow(PitWallWindow):
         self.lap_label.setText(f"LAP {self.current_lap} / {self.total_laps}")
         self.axis_widget.set_total_laps(self.total_laps)
         self.status_label.setText(
-            f"● Live  │  {len(self.stints)} drivers  │  Lap {self.current_lap}"
+            f"● Live  │  {len(self.histories)} drivers  │  Lap {self.current_lap}"
         )
 
         # Sort by position, fallback alphabetical
         sorted_codes = sorted(
-            self.stints.keys(),
+            self.histories.keys(),
             key=lambda c: (self.positions.get(c, 999), c)
         )
 
         for i, code in enumerate(sorted_codes):
             pos = self.positions.get(code)
+            stints = self.histories[code].stints()
             if code not in self._row_widgets:
-                bar = StintBar(code, self.stints[code], self.total_laps, pos, self.current_lap)
+                bar = StintBar(code, stints, self.total_laps, pos, self.current_lap)
                 self._row_widgets[code] = bar
             else:
                 self._row_widgets[code].update_data(
-                    self.stints[code], self.total_laps, pos, self.current_lap
+                    stints, self.total_laps, pos, self.current_lap
                 )
             self.rows_layout.insertWidget(i, self._row_widgets[code])

@@ -269,6 +269,7 @@ class LeaderboardComponent(BaseComponent):
                     self._tyre_textures[texture_name] = arcade.load_texture(texture_path)
         self.computed_gaps = {}
         self.computed_neighbor_gaps = {}
+        self.outcomes = {}   # {code: RaceOutcome}, for official gaps between finishers
 
     @property
     def visible(self) -> bool:
@@ -291,10 +292,36 @@ class LeaderboardComponent(BaseComponent):
         """
         self._visible = True
 
-    def set_entries(self, entries: List[Tuple[str, Tuple[int,int,int], dict, float]]):
-        # entries sorted as expected
+    def set_entries(self, entries: List[Tuple[str, Tuple[int,int,int], dict, float]], outcomes=None):
+        # entries arrive in running order (frame "position"); outcomes: {code: RaceOutcome}
         self.entries = entries
+        self.outcomes = outcomes or {}
         self._calculate_gaps()
+
+    def _finished_gap(self, code_ahead, code_behind, pos_ahead, pos_behind):
+        """
+        Official time gap between two cars that have both taken the flag, or None.
+
+        Their telemetry is frozen at the line, so a distance-based gap would be noise; the
+        official result has the real one (penalties included).
+        """
+        if pos_ahead.get("race_state") != "finished" or pos_behind.get("race_state") != "finished":
+            return None
+        ahead, behind = self.outcomes.get(code_ahead), self.outcomes.get(code_behind)
+        if ahead is None or behind is None or ahead.official_gap_s is None or behind.official_gap_s is None:
+            return None
+        return behind.official_gap_s - ahead.official_gap_s
+
+    def gap_between(self, idx_ahead, idx_behind):
+        """(time_s, dist_m) from entry idx_ahead back to idx_behind; dist_m is None for finishers."""
+        code_a, _, pos_a, progress_a = self.entries[idx_ahead]
+        code_b, _, pos_b, progress_b = self.entries[idx_behind]
+        official = self._finished_gap(code_a, code_b, pos_a, pos_b)
+        if official is not None:
+            return official, None
+        # progress is in FastF1 position units (1/10 m); 55.56 m/s = a 200 km/h reference speed
+        dist_m = abs((progress_a or 0.0) - (progress_b or 0.0)) / 10.0
+        return dist_m / 55.56, dist_m
 
     def _calculate_gaps(self):
         self.computed_gaps = {}
@@ -302,15 +329,10 @@ class LeaderboardComponent(BaseComponent):
         if not self.entries:
             return
 
-        leader_progress_val = self.entries[0][3]
-
         for idx, (code, _, pos, progress_m) in enumerate(self.entries):
             # Leader gap
             try:
-                raw_to_leader = abs(leader_progress_val - (progress_m or 0.0))
-                dist_to_leader = raw_to_leader / 10.0
-                time_to_leader = dist_to_leader / 55.56
-                self.computed_gaps[code] = 0.0 if idx == 0 else time_to_leader
+                self.computed_gaps[code] = 0.0 if idx == 0 else self.gap_between(0, idx)[0]
             except Exception:
                 self.computed_gaps[code] = None
 
@@ -318,14 +340,11 @@ class LeaderboardComponent(BaseComponent):
             ahead_info = None
             try:
                 if idx > 0:
-                    code_ahead, _, _, progress_ahead = self.entries[idx - 1]
-                    raw = abs((progress_m or 0.0) - (progress_ahead or 0.0))
-                    dist_m = raw / 10.0
-                    time_s = dist_m / 55.56
-                    ahead_info = (code_ahead, dist_m, time_s)
+                    time_s, dist_m = self.gap_between(idx - 1, idx)
+                    ahead_info = (self.entries[idx - 1][0], dist_m, time_s)
             except Exception:
                 ahead_info = None
-            
+
             self.computed_neighbor_gaps[code] = {"ahead": ahead_info}
 
     def draw(self, window):
@@ -368,19 +387,10 @@ class LeaderboardComponent(BaseComponent):
 
         self.rects = []
 
-        # Sort entries by lap number an distance progressed
-        # If any of the entries have lap > 1, then sort
-
-        if any(e[2].get("lap", 0) > 1 for e in self.entries):
-            new_entries = sorted(
-                self.entries,
-                key=lambda e: (
-                    -e[2].get("lap", 0),  # Descending lap number
-                    -e[2].get("dist")                 # Descending distance progressed
-                )
-            )
-        else:
-            new_entries = self.entries
+        # Entries arrive in the frame's running order (src/lib/running_order.py). They used to be
+        # re-sorted here by lap and in-lap distance, which put finished cars, frozen at the line,
+        # in random order.
+        new_entries = sorted(self.entries, key=lambda e: e[2].get("position", 999))
 
         for i, (code, color, pos, progress_m) in enumerate(new_entries):
             current_pos = i + 1
@@ -397,13 +407,14 @@ class LeaderboardComponent(BaseComponent):
             else:
                 text_color = color
 
-            text = f"{current_pos}. {code}" 
-            if pos.get("rel_dist",0) != 1:
-                out_text=""
-            else:
-                out_text="  OUT"
+            text = f"{current_pos}. {code}"
+            # The race state is decided once, in src/lib/running_order.py (OUT used to be guessed
+            # from the in-lap distance reading exactly 1.0, which missed cars that retired in the pits)
+            race_state = pos.get("race_state", "running")
+            out_text = {"retired": "  OUT", "disqualified": "  DSQ"}.get(race_state, "")
+            finish_text = "  🏁" if race_state == "finished" else ""
 
-            if pos.get("in_pit"):
+            if pos.get("in_pit") and not out_text:
                 driver_text = text
                 pit_text="  PIT"
             else:
@@ -411,12 +422,15 @@ class LeaderboardComponent(BaseComponent):
                 pit_text = ""
 
             arcade.Text(driver_text,left_x,top_y,text_color,16,anchor_x="left",anchor_y="top").draw()
-            
+
             #PIT indicator in white
             if pit_text:arcade.Text(pit_text, left_x + 80, top_y,arcade.color.WHITE,16,anchor_x="left",anchor_y="top").draw()
 
-            #OUT indicator in red
+            #OUT / DSQ indicator in red
             if out_text: arcade.Text(out_text, left_x + 80, top_y, (155,17,30), 16, anchor_x="left", anchor_y="top",bold=True).draw()
+
+            #Chequered flag once the car has finished
+            if finish_text: arcade.Text(finish_text, left_x + 80, top_y, arcade.color.WHITE, 14, anchor_x="left", anchor_y="top").draw()
 
             # Gap display (if enabled)
             if getattr(self, "show_neighbor_gaps", False):
@@ -909,18 +923,22 @@ class DriverInfoComponent(BaseComponent):
         if lb and hasattr(lb, "entries") and lb.entries:
             try:
                 idx = next(i for i, e in enumerate(lb.entries) if e[0] == code)
-                curr_pos = lb.entries[idx][3]
 
-                def get_gap_str(neighbor_idx, prefix, sign):
-                    n_code, _, _, n_pos = lb.entries[neighbor_idx]
-                    dist = abs(curr_pos - n_pos) / 10.0
-                    time = dist / 55.56  # 200 km/h reference speed
-                    return f"{prefix} ({n_code}): {sign}{time:.2f}s ({dist:.1f}m)"
+                def get_gap_str(ahead_idx, behind_idx, neighbor_idx, prefix, sign):
+                    n_code = lb.entries[neighbor_idx][0]
+                    if hasattr(lb, "gap_between"):
+                        time, dist = lb.gap_between(ahead_idx, behind_idx)
+                    else:
+                        dist = abs(lb.entries[ahead_idx][3] - lb.entries[behind_idx][3]) / 10.0
+                        time = dist / 55.56  # 200 km/h reference speed
+                    # dist is None for two finishers: the gap is the official one, not a distance
+                    where = f" ({dist:.1f}m)" if dist is not None else ""
+                    return f"{prefix} ({n_code}): {sign}{time:.2f}s{where}"
 
                 if idx > 0:
-                    gap_ahead = get_gap_str(idx - 1, "Ahead", "+")
+                    gap_ahead = get_gap_str(idx - 1, idx, idx - 1, "Ahead", "+")
                 if idx < len(lb.entries) - 1:
-                    gap_behind = get_gap_str(idx + 1, "Behind", "-")
+                    gap_behind = get_gap_str(idx, idx + 1, idx + 1, "Behind", "-")
 
             except (StopIteration, IndexError):
                 pass

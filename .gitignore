@@ -11,6 +11,7 @@ __pycache__/
 .ruff_cache/
 
 # Local FastF1/cache/generated data
+# .fastf1-cache is the ONE FastF1 download cache, shared by the replay and the pipeline
 .fastf1-cache
 computed_data/
 
@@ -22,3 +23,15 @@ still_frame.png
 .DS_Store
 .idea/
 .vscode/
+
+# PitwallOS data lake (rebuildable, large)
+data/
+# The pipeline's old separate FastF1 cache, no longer written (kept ignored in case one is left over)
+f1_cache/
+
+# Pre-refactor backups
+_backup/
+
+# Local project report and Word lock files (not for the repository)
+PitwallOS_Project_Report.docx
+~$*

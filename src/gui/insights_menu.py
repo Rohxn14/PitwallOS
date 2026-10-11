@@ -101,9 +101,15 @@ class InsightsMenu(QMainWindow):
         title.setFont(QFont("Arial", 24, QFont.Bold))
         layout.addWidget(title)
         
-        subtitle = QLabel("Launch telemetry insights and analysis tools")
+        subtitle = QLabel("Live windows fed by the running replay")
         subtitle.setFont(QFont("Arial", 11))
         layout.addWidget(subtitle)
+
+        # Race analysis reads the data lake and needs no replay, so it is not here
+        analysis_note = QLabel("Race analysis: session picker → Analyze")
+        analysis_note.setFont(QFont("Arial", 9))
+        analysis_note.setStyleSheet("color: gray;")
+        layout.addWidget(analysis_note)
         
         return header
     

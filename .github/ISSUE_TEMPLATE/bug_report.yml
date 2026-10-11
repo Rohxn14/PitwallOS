@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible problem in f1-race-replay
+description: Report a reproducible problem in PitwallOS
 title: "[BUG] "
 labels: ["bug"]
 body:

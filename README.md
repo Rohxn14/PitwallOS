@@ -93,8 +93,8 @@ To get started with this project locally, you can follow these steps:
 
 1. **Clone the Repository:**
    ```bash
-   git clone https://github.com/IAmTomShaw/f1-race-replay
-    cd f1-race-replay
+   git clone https://github.com/Rohxn14/PitwallOS
+    cd PitwallOS
     ```
 2. **Create a Virtual Environment:**
     This process differs based on your operating system.
@@ -178,7 +178,7 @@ python main.py --viewer --year 2025 --round 12 --qualifying --sprint
 ## File Structure
 
 ```
-f1-race-replay/
+PitwallOS/
 ├── main.py                    # Entry point, handles session loading and starts the replay
 ├── requirements.txt           # Python dependencies
 ├── README.md                  # Project documentation
