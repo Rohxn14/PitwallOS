@@ -11,7 +11,8 @@ down. No model and no estimate, so nothing here can be "wrong on purpose":
 - strategies:     per driver, the compound sequence and number of stops; and which drivers ran
                   the same strategy (a retirement's strategy was never completed, so it is marked
                   and does not count towards the strategy's best result)
-- data quality:   what the pipeline flagged for this race (clean, neutralised, wet, pit laps)
+- data quality:   what the pipeline flagged for this race (clean, neutralised, wet, pit laps);
+                  defined in src/pipeline/quality.py, shared with the backfill report
 
 Everything that has to be estimated (pace, pit loss, fuel-corrected degradation, dirty air,
 undercuts) is Phase 2, step by step, each with its own golden test. The window shows those as
@@ -30,6 +31,7 @@ import pandas as pd
 
 from src.lib.running_order import took_the_flag
 from src.pipeline import lake
+from src.pipeline.quality import data_quality  # one definition, shared with the backfill report
 
 COMPOUND_LETTER = {"SOFT": "S", "MEDIUM": "M", "HARD": "H", "INTERMEDIATE": "I", "WET": "W"}
 
@@ -279,33 +281,6 @@ def strategy_groups(strategy_table: pd.DataFrame) -> pd.DataFrame:
     out["_best"] = out["best_result"].fillna(999)
     out = out.sort_values(["finishers", "_best"], ascending=[False, True]).drop(columns="_best")
     return out.reset_index(drop=True)
-
-
-# --- data quality ------------------------------------------------------------------
-
-def data_quality(laps: pd.DataFrame) -> Dict[str, int]:
-    """What the pipeline flagged for this race, counted from Silver's lap flags."""
-    flag = lambda name: int(laps[name].sum()) if name in laps.columns else 0
-    kinds = laps["pit_kind"].value_counts() if "pit_kind" in laps.columns else pd.Series(dtype=int)
-    return {
-        "laps": int(len(laps)),
-        "drivers": int(laps["driver_code"].nunique()) if len(laps) else 0,
-        "clean_laps": flag("is_clean_lap"),
-        "no_lap_time": int(laps["lap_time_sec"].isna().sum()) if "lap_time_sec" in laps.columns else 0,
-        "lap_1": flag("is_lap1"),
-        "pit_laps": flag("is_pit_lap"),
-        "not_green": int((~laps["is_green"]).sum()) if "is_green" in laps.columns else 0,
-        "safety_car_laps": flag("is_sc"),
-        "vsc_laps": flag("is_vsc"),
-        "red_flag_laps": flag("is_red"),
-        "inaccurate": int((~laps["is_accurate"]).sum()) if "is_accurate" in laps.columns else 0,
-        "wet_tyre_laps": flag("is_wet_tyre"),
-        "deleted_laps": flag("is_deleted"),
-        "tyre_changes": int(kinds.get("tyre_change", 0)),
-        "pass_throughs": int(kinds.get("pass_through", 0)),
-        "ended_in_pits": int(kinds.get("ended", 0)),
-        "unknown_passages": int(kinds.get("unknown", 0)),
-    }
 
 
 # --- everything for one race ----------------------------------------------------------

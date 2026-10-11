@@ -49,3 +49,14 @@ def test_manifest_round_trip(tmp_path):
     assert lake.read_manifest(2024, 3, root=tmp_path)["total_laps"] == 50
     with pytest.raises(FileNotFoundError):
         lake.read_manifest(2024, 4, root=tmp_path)
+
+
+def test_report_opens_correctly_in_excel_and_round_trips(tmp_path):
+    """2024 round 21 is the São Paulo GP: without a byte-order mark Excel shows 'SÃ£o Paulo'."""
+    path = lake.write_report(pd.DataFrame({"round": [21], "event_name": ["São Paulo Grand Prix"]}),
+                             "backfill_2024", root=tmp_path)
+    assert path == tmp_path / "reports" / "backfill_2024.csv"
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")        # UTF-8 byte-order mark
+    back = lake.read_report("backfill_2024", root=tmp_path)
+    assert back.columns.tolist() == ["round", "event_name"]
+    assert back["event_name"][0] == "São Paulo Grand Prix"

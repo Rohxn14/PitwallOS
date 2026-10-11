@@ -15,6 +15,11 @@ Layout (one folder per session, same shape in every layer):
           laps.parquet  telemetry.parquet
       gold/season=2024/round=12/session=R/
           lap_features.parquet
+      reports/
+          backfill_2024.csv       one row per race: status, error, every quality count
+
+Bronze telemetry (car_telemetry, pos_telemetry) is optional: a race ingested
+laps only has no telemetry files, and its manifest says "telemetry": false.
 """
 
 from __future__ import annotations
@@ -35,6 +40,11 @@ LAYERS = (BRONZE, SILVER, GOLD)
 
 MANIFEST_NAME = "_manifest.json"
 GOLD_TABLE = "lap_features"
+BRONZE_TELEMETRY_TABLES = ("car_telemetry", "pos_telemetry")
+REPORTS_DIR = "reports"
+# UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
+# ("São Paulo" shows as "SÃ£o Paulo"). pandas reads it back with clean column names.
+REPORT_ENCODING = "utf-8-sig"
 
 PathLike = Union[str, Path]
 
@@ -114,6 +124,42 @@ def read_manifest(year: int, round_number: int, session: str = "R",
     if not path.exists():
         raise FileNotFoundError(f"Bronze manifest not found: {path}. Run Bronze extraction first.")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def has_bronze(year: int, round_number: int, session: str = "R", root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
+    """
+    True once a session's Bronze is complete.
+
+    The manifest is written after every table, so it marks completion: tables left by a
+    crash before it are not Bronze, and the next extraction overwrites them.
+    """
+    return (session_dir(BRONZE, year, round_number, session, root) / MANIFEST_NAME).exists()
+
+
+def bronze_has_telemetry(year: int, round_number: int, session: str = "R",
+                         root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
+    """True if Bronze holds car and position telemetry (False for a laps-only ingestion)."""
+    return all(table_path(BRONZE, t, year, round_number, session, root).exists() for t in BRONZE_TELEMETRY_TABLES)
+
+
+def report_path(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
+    """A report about the lake (CSV, for people), e.g. report_path('backfill_2024')."""
+    return Path(root) / REPORTS_DIR / f"{name}.csv"
+
+
+def write_report(df: pd.DataFrame, name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
+    """Write a report atomically (temporary file + rename), like every table."""
+    path = report_path(name, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    df.to_csv(tmp, index=False, encoding=REPORT_ENCODING)
+    os.replace(tmp, path)
+    return path
+
+
+def read_report(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> pd.DataFrame:
+    """Read a report written by write_report."""
+    return pd.read_csv(report_path(name, root), encoding=REPORT_ENCODING)
 
 
 def list_sessions(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT) -> List[Path]:
