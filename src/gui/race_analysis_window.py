@@ -9,9 +9,10 @@ If the race is not in the lake yet, the window builds it first (Bronze -> Silver
 only). FastF1 reads from the same download cache as the replay, so a race that was replayed
 before is built without downloading anything.
 
-The tabs show only what the lake holds as facts (src/analytics/race_overview.py). The Phase 2
-analytics appear as placeholders until each step is built and golden-tested; the old engine's
-numbers (src/analytics/race_engine.py, known wrong) are deliberately not shown.
+The tabs show what the lake holds as facts (src/analytics/race_overview.py) and each Phase 2 step
+once it is built and golden-tested: the Pace tab is step 1 (src/analytics/laps.py and
+neutralisations.py, drawn by src/gui/pace_tab.py). Later steps stay placeholders until then; the
+old engine's numbers (src/analytics/race_engine.py, known wrong) are deliberately not shown.
 """
 
 from __future__ import annotations
@@ -29,18 +30,13 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from src.analytics.laps import RacePace, load_race_pace
 from src.analytics.race_overview import DNF_MARK, RaceOverview, lake_status, load_overview
+from src.gui.analysis_theme import (
+    ACCENT, BAD, BG, BORDER, COMPOUND_COLOURS, COMPOUND_TEXT, DIM, GOOD, PANEL, TEXT,
+)
+from src.gui.pace_tab import PACE_TABLE_COLUMNS, PaceTab
 from src.pipeline import lake
-
-BG, PANEL, BORDER = "#121212", "#1A1A1A", "#2A2A2A"
-TEXT, DIM, ACCENT, GOOD, BAD = "#E0E0E0", "#8A8A8A", "#00E5FF", "#00E676", "#FF5252"
-
-COMPOUND_COLOURS = {
-    "SOFT": "#E8002D", "MEDIUM": "#FFD12E", "HARD": "#E8E8E8",
-    "INTERMEDIATE": "#39B54A", "WET": "#0067FF",
-}
-COMPOUND_TEXT = {"SOFT": "#FFFFFF", "MEDIUM": "#000000", "HARD": "#000000",
-                 "INTERMEDIATE": "#FFFFFF", "WET": "#FFFFFF"}
 
 STYLE = f"""
     QMainWindow, QWidget#page, QWidget#scrollpage {{ background: {BG}; color: {TEXT}; }}
@@ -67,8 +63,10 @@ STYLE = f"""
 PHASE2_STEPS = [
     ("0", "Silver stint and pit-passage repair", "Stops = tyre changes; pass-throughs are not stops.",
      "British 45 tyre changes; Qatar 26 + 34 pass-throughs", True),
-    ("1", "Lap selection and neutralisations", "pace_laps() with an exclusion ledger; SC / VSC periods from "
-     "the official flags only.", "Qatar SC laps 1-4 and 34-42, VSC lap 40; British none", False),
+    ("1", "Lap selection and neutralisations", "Pace tab: every lap gets one status (pace, or the first reason it "
+     "is not), with the exclusion ledger; outliers are > 3 s slower than the median of the 5 clean laps around "
+     "them; raw pace by compound. SC / VSC / red-flag periods from the official track status, in the leader's laps.",
+     "Race Control's log: Qatar SC 1-4, SC 35-39, VSC 40, SC 40-42; British none", True),
     ("2", "Stops and pit loss", "One row per tyre change. Loss = in-lap + out-lap - 2 x reference pace; "
      "circuit loss = median of green stops; SC stops measured separately.",
      "Per-driver stop counts; your predicted loss, written first", False),
@@ -232,6 +230,7 @@ class RaceAnalysisWindow(QMainWindow):
         self.year, self.round_number, self.root = year, round_number, root
         self.event_name = event_name or f"Round {round_number}"
         self.overview: Optional[RaceOverview] = None
+        self.pace: Optional[RacePace] = None
         self.worker: Optional[PipelineBuildThread] = None
         self._laps_df: Optional[pd.DataFrame] = None
 
@@ -286,6 +285,8 @@ class RaceAnalysisWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_result_tab(), "Result")
         self.tabs.addTab(self._build_strategy_tab(), "Strategy")
+        self.pace_tab = PaceTab()
+        self.tabs.addTab(self.pace_tab, "Pace")
         self.tabs.addTab(self._build_laps_tab(), "Laps")
         self.tabs.addTab(self._build_quality_tab(), "Data quality")
         self.tabs.addTab(self._build_phase2_tab(), "Phase 2 analytics")
@@ -380,10 +381,11 @@ class RaceAnalysisWindow(QMainWindow):
         lay.setContentsMargins(10, 10, 10, 10)
         bar = QHBoxLayout()
         self.laps_source = QComboBox()
-        self.laps_source.addItems(["Silver laps (cleaned, flagged)", "Gold lap features (model input)"])
+        self.laps_source.addItems(["Silver laps (cleaned, flagged)", "Gold lap features (model input)",
+                                   "Pace classification (Phase 2 step 1)"])
         self.laps_source.currentIndexChanged.connect(self._load_laps_table)
         self.laps_filter = QLineEdit()
-        self.laps_filter.setPlaceholderText("Filter by driver or compound, e.g. VER, HARD")
+        self.laps_filter.setPlaceholderText("Filter by driver, compound or pace status, e.g. VER, HARD, outlier")
         self.laps_filter.textChanged.connect(self._fill_laps_table)
         bar.addWidget(self.laps_source)
         bar.addWidget(self.laps_filter, 1)
@@ -517,6 +519,12 @@ class RaceAnalysisWindow(QMainWindow):
         self._fill_result(ov)
         self._fill_strategy(ov)
         self._fill_quality(ov)
+        try:
+            self.pace = load_race_pace(self.year, self.round_number, root=self.root)
+            self.pace_tab.set_race(self.pace, order=ov.classification["driver_code"].tolist())
+        except Exception as e:   # the other tabs still work; this one says why it cannot
+            self.pace = None
+            self.pace_tab.show_error(f"{type(e).__name__}: {e}")
         self._load_laps_table()
         self.stack.setCurrentIndex(1)
 
@@ -605,6 +613,15 @@ class RaceAnalysisWindow(QMainWindow):
         self.warnings_lbl.setText("Bronze warnings: " + ("; ".join(warnings) if warnings else "none"))
 
     def _load_laps_table(self):
+        if self.laps_source.currentIndex() == 2:           # step 1's status of every lap: the lap chart as a table
+            if self.pace is None:
+                self._laps_df = None
+                self.laps_table.setRowCount(0)
+                self.laps_status.setText("The pace classification could not be computed for this race (see the Pace tab).")
+                return
+            self._laps_df = self.pace.laps[[c for c in PACE_TABLE_COLUMNS if c in self.pace.laps.columns]]
+            self._fill_laps_table()
+            return
         gold = self.laps_source.currentIndex() == 1
         path = (lake.gold_features_path(self.year, self.round_number, root=self.root) if gold
                 else lake.table_path(lake.SILVER, "laps", self.year, self.round_number, "R", self.root))
@@ -624,8 +641,9 @@ class RaceAnalysisWindow(QMainWindow):
         text = self.laps_filter.text().strip().upper()
         if text:
             mask = df["driver_code"].astype(str).str.upper().str.contains(text, regex=False)
-            if "compound" in df.columns:
-                mask |= df["compound"].astype(str).str.upper().str.contains(text, regex=False)
+            for column in ("compound", "pace_status"):
+                if column in df.columns:
+                    mask |= df[column].astype(str).str.upper().str.contains(text, regex=False)
             df = df[mask]
         shown = df.head(500)
         self.laps_table.setColumnCount(len(shown.columns))

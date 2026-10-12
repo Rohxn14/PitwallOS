@@ -4,11 +4,16 @@ import pytest
 
 
 MODULES = [
+    "src.analytics.laps",
+    "src.analytics.neutralisations",
     "src.analytics.race_overview",
     "src.bayesian_tyre_model",
     "src.cli.race_selection",
     "src.f1_data",
+    "src.gui.analysis_theme",
     "src.gui.insights_menu",
+    "src.gui.pace_charts",
+    "src.gui.pace_tab",
     "src.gui.pit_wall_window",
     "src.gui.pit_wall_window_template",
     "src.gui.race_analysis_window",
