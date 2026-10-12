@@ -40,6 +40,9 @@ def data_quality(laps: pd.DataFrame) -> Dict[str, int]:
         "pass_throughs": int(kinds.get("pass_through", 0)),
         "ended_in_pits": int(kinds.get("ended", 0)),
         "unknown_passages": int(kinds.get("unknown", 0)),
+        # drivers whose tyre record changes away from any pit passage (cleaner.tyre_record_inconsistent)
+        "tyre_inconsistent_drivers": int(laps.loc[laps["is_tyre_inconsistent"], "driver_code"].nunique())
+                                     if "is_tyre_inconsistent" in laps.columns else 0,
     }
 
 

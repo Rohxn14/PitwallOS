@@ -29,6 +29,9 @@ from src.pipeline import contracts, lake
 WET_COMPOUNDS = ("INTERMEDIATE", "WET")
 # Compound labels that do not identify a tyre, so they cannot show a tyre change.
 UNIDENTIFIED_COMPOUNDS = ("UNKNOWN", "TEST_UNKNOWN")
+# What FastF1 gives (as text) when the timing feed has no compound at all for a stint, e.g.
+# 2023 Canadian GP, Tsunoda laps 36-70. That is a missing value, not a tyre: Silver makes it null.
+NO_COMPOUND_MARKERS = ("NONE", "NAN", "")
 
 # What happened on a pit-lane passage, recorded on its in-lap (null on every other lap).
 # FastF1's own `Stint` goes up on EVERY passage, including a safety car led through the pit lane
@@ -64,6 +67,13 @@ def _seconds(series: pd.Series) -> pd.Series:
     return series.dt.total_seconds()
 
 
+def _compound(raw: pd.Series) -> pd.Series:
+    """Bronze Compound -> upper-case label, with FastF1's 'no compound' text turned into null."""
+    compound = raw.astype("string").str.upper()
+    no_compound = compound.str.strip().isin(NO_COMPOUND_MARKERS).fillna(False).astype(bool)
+    return compound.mask(no_compound)
+
+
 # --- laps ------------------------------------------------------------------
 
 def clean_laps(laps: pd.DataFrame, weather: pd.DataFrame,
@@ -91,7 +101,7 @@ def clean_laps(laps: pd.DataFrame, weather: pd.DataFrame,
     df = df[~dup]
 
     status = df["TrackStatus"].astype("string").fillna("")
-    compound = df["Compound"].astype("string").str.upper()
+    compound = _compound(df["Compound"])
     lap_number = df["LapNumber"].astype("int64")
 
     out = pd.DataFrame({
@@ -175,28 +185,84 @@ def classify_pit_passage(compound, tyre_life, next_compound, next_tyre_life, has
     return PIT_PASS_THROUGH if int(next_tyre_life) == int(tyre_life) + 1 else PIT_TYRE_CHANGE
 
 
+def tyre_record_inconsistent(laps: pd.DataFrame) -> pd.Series:
+    """
+    True on every lap of a driver whose tyre record changes where no tyre change can happen.
+
+    Tyres only come off in the pit lane (or under a red flag), so the record may change (compound
+    changes, or the age does not count up by one) only on the out-lap or the lap after it (the
+    feed can lag a lap), or on / right after a red-flag lap. A change anywhere else means the feed
+    has the tyre stints in the wrong place: 2025 Miami shows tyre age restarting up to four laps
+    before the stops, for 12 drivers. Then neither the stops nor the tyre ages of that driver can
+    be trusted, and every lap of theirs is flagged (rule 3: flag, never delete).
+
+    Expects laps sorted by driver then lap. Missing values are never a change: unknown is not
+    evidence.
+    """
+    by_driver = laps.groupby("driver_code", sort=False)
+    prev_lap = by_driver["lap_number"].shift(1)
+    prev_compound = by_driver["compound"].shift(1)
+    age = laps["tyre_life"].astype("float64")
+    prev_age = by_driver["tyre_life"].shift(1).astype("float64")
+    consecutive = prev_lap.eq(laps["lap_number"] - 1).fillna(False).astype(bool)
+
+    both_compounds = laps["compound"].notna() & prev_compound.notna()
+    compound_changed = both_compounds & (laps["compound"].astype(object) != prev_compound.astype(object))
+    age_jumped = age.notna() & prev_age.notna() & (age != prev_age + 1)
+    changed = consecutive & (compound_changed | age_jumped).fillna(False).astype(bool)
+
+    flag = lambda col, k: by_driver[col].shift(k, fill_value=False).astype(bool)
+    explained = flag("is_in_lap", 1) | flag("is_in_lap", 2) | laps["is_red"] | flag("is_red", 1)
+    unexplained = changed & ~explained
+    return unexplained.groupby(laps["driver_code"]).transform("any").astype(bool)
+
+
 def _add_pit_kind_and_stint(laps: pd.DataFrame) -> pd.DataFrame:
     """
     pit_kind on every in-lap, is_tyre_change, and `stint` counted from tyre changes only.
 
     Expects laps sorted by driver then lap. The stint after a passage that cannot be classified
     is unknown (null) for the rest of that driver's race, rather than guessed.
+
+    The feed can lag a lap: the out-lap still shows the old tyres and the change appears on the
+    lap after it (2023 Canada, TSU lap 34: the out-lap says HARD 34, the next lap has no tyre
+    data at all; the only case in 2023-2025). A tyre change needs a pit passage, so a change seen
+    there belongs to this passage. A pass-through must therefore also continue from the out-lap
+    to the next lap; otherwise it is a tyre change (change seen) or unknown (tyre data missing).
+    The check is skipped when the out-lap is itself an in-lap (back-to-back passages: a penalty
+    then a stop, 2024 Las Vegas OCO laps 11-12; the field led through the pit lane on laps 2-4
+    behind the safety car, 2025 Australia): that next passage is judged on its own.
+
+    A driver whose tyre record is inconsistent (see tyre_record_inconsistent) gets `unknown` on
+    every passage: the record that would classify them is the thing that is wrong.
     """
     laps = laps.copy()
+    laps["is_tyre_inconsistent"] = tyre_record_inconsistent(laps)
+    driver, lap = laps["driver_code"], laps["lap_number"]
     # driver_code is a nullable string column: comparing with the shifted last row gives NA, not False
-    same_driver = laps["driver_code"].eq(laps["driver_code"].shift(-1)).fillna(False).astype(bool)
-    next_is_consecutive = same_driver & laps["lap_number"].shift(-1).eq(laps["lap_number"] + 1)
-    nxt_compound = laps["compound"].shift(-1)
-    nxt_tyre_life = laps["tyre_life"].shift(-1)
+    same_driver = driver.eq(driver.shift(-1)).fillna(False).astype(bool)
+    next_is_consecutive = same_driver & lap.shift(-1).eq(lap + 1)
+    after_next_is_consecutive = next_is_consecutive & driver.eq(driver.shift(-2)).fillna(False).astype(bool) \
+        & lap.shift(-2).eq(lap + 2)
+    next_is_in_lap = laps["is_in_lap"].shift(-1, fill_value=False).astype(bool)
+    compound, tyre_life = laps["compound"], laps["tyre_life"]
 
     kinds = pd.Series(pd.NA, index=laps.index, dtype="string")
     for i in laps.index[laps["is_in_lap"]]:
         if same_driver.loc[i] and not next_is_consecutive.loc[i]:
             kinds.loc[i] = PIT_UNKNOWN         # the next lap exists but a lap is missing in between
             continue
-        kinds.loc[i] = classify_pit_passage(laps.at[i, "compound"], laps.at[i, "tyre_life"],
-                                            nxt_compound.loc[i], nxt_tyre_life.loc[i],
-                                            has_next_lap=bool(same_driver.loc[i]))
+        pos = laps.index.get_loc(i)
+        kind = classify_pit_passage(compound.iloc[pos], tyre_life.iloc[pos],
+                                    compound.iloc[pos + 1] if same_driver.loc[i] else pd.NA,
+                                    tyre_life.iloc[pos + 1] if same_driver.loc[i] else pd.NA,
+                                    has_next_lap=bool(same_driver.loc[i]))
+        if kind == PIT_PASS_THROUGH and after_next_is_consecutive.loc[i] and not next_is_in_lap.loc[i]:
+            kind = classify_pit_passage(compound.iloc[pos + 1], tyre_life.iloc[pos + 1],
+                                        compound.iloc[pos + 2], tyre_life.iloc[pos + 2], has_next_lap=True)
+        if laps.at[i, "is_tyre_inconsistent"]:
+            kind = PIT_UNKNOWN                 # this driver's tyre record cannot be trusted
+        kinds.loc[i] = kind
     laps["pit_kind"] = kinds
     laps["is_tyre_change"] = (kinds == PIT_TYRE_CHANGE).fillna(False).astype(bool)
 

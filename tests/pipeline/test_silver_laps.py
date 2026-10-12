@@ -80,6 +80,78 @@ def test_missing_values_stay_missing_instead_of_being_invented():
     assert not row["is_wet_tyre"]
 
 
+def _stint_rows(driver, laps):
+    """laps: [(lap, compound, tyre_life, pit)] with pit in (None, 'in', 'out'); 100 s per lap."""
+    return [dict(driver=driver, lap=n, start=100 * n, end=100 * n + 95, compound=c, tyre_life=t,
+                 pit_in=100 * n + 90 if pit == "in" else None, pit_out=100 * n + 10 if pit == "out" else None)
+            for n, c, t, pit in laps]
+
+
+def test_a_tyre_change_the_feed_shows_one_lap_late_is_still_a_tyre_change():
+    """The out-lap still shows the old tyres (MEDIUM 12), the change appears a lap later (HARD 1).
+
+    Seen at 2023 Canada (TSU lap 34), where the lap after had no tyre data at all (-> unknown,
+    see the 'None' test below); here the late record is complete, so the change is known."""
+    laps, _ = silver(_stint_rows("OCO", [(10, "MEDIUM", 10, None), (11, "MEDIUM", 11, "in"),
+                                         (12, "MEDIUM", 12, "out"), (13, "HARD", 1, None),
+                                         (14, "HARD", 2, None)]))
+    assert laps.loc[("OCO", 11), "pit_kind"] == "tyre_change"
+    assert laps["stint"].tolist() == [1, 1, 2, 2, 2]
+    assert not laps["is_tyre_inconsistent"].any()
+
+
+def test_a_real_pass_through_keeps_counting_after_the_out_lap():
+    laps, _ = silver(_stint_rows("VER", [(35, "MEDIUM", 20, None), (36, "MEDIUM", 21, "in"),
+                                         (37, "MEDIUM", 22, "out"), (38, "MEDIUM", 23, None)]))
+    assert laps.loc[("VER", 36), "pit_kind"] == "pass_through"
+    assert laps["stint"].tolist() == [1, 1, 1, 1]
+
+
+def test_back_to_back_passages_are_judged_separately():
+    """2024 Las Vegas, OCO: through the pit lane on lap 11 (tyres kept), then a stop on lap 12."""
+    laps, _ = silver(_stint_rows("OCO", [(10, "MEDIUM", 10, None), (11, "MEDIUM", 11, "in"),
+                                         (12, "MEDIUM", 12, "in"), (13, "HARD", 1, "out"),
+                                         (14, "HARD", 2, None)]))
+    assert laps.loc[("OCO", 11), "pit_kind"] == "pass_through"
+    assert laps.loc[("OCO", 12), "pit_kind"] == "tyre_change"
+    assert laps["stint"].tolist() == [1, 1, 1, 2, 2]
+
+
+def test_a_tyre_record_that_changes_away_from_the_pits_is_flagged_and_not_trusted():
+    """2025 Miami: the tyre age restarts four laps BEFORE the stop. The passage cannot be judged."""
+    laps, _ = silver(_stint_rows("PIA", [(24, "HARD", 23, None), (25, "MEDIUM", 1, None),
+                                         (26, "MEDIUM", 2, None), (27, "MEDIUM", 3, None),
+                                         (28, "MEDIUM", 4, None), (29, "MEDIUM", 5, "in"),
+                                         (30, "MEDIUM", 6, "out"), (31, "MEDIUM", 7, None)]))
+    assert laps["is_tyre_inconsistent"].all()                # every lap of the driver
+    assert laps.loc[("PIA", 29), "pit_kind"] == "unknown"     # not a confident pass-through
+    assert laps.loc[("PIA", 30):, "stint"].isna().all()
+
+
+def test_a_change_under_a_red_flag_is_not_inconsistent():
+    """Under a red flag teams change tyres in the pit lane; the record may jump there."""
+    rows = _stint_rows("NOR", [(1, "SOFT", 4, None), (2, "SOFT", 5, None), (3, "HARD", 1, None)])
+    rows[1]["status"] = "15"
+    laps, _ = silver(rows)
+    assert not laps["is_tyre_inconsistent"].any()
+
+
+def test_fastf1_none_text_is_a_missing_compound_not_a_tyre():
+    """2023 Canadian GP: no compound for Tsunoda's last stint; FastF1 gives the text 'None'."""
+    from src.pipeline import contracts
+
+    laps, report = silver([
+        dict(driver="TSU", lap=34, start=100, end=190, compound="HARD", tyre_life=20),
+        dict(driver="TSU", lap=35, start=190, end=290, compound="HARD", tyre_life=21, pit_in=285),
+        dict(driver="TSU", lap=36, start=290, end=390, compound="None", tyre_life=None, pit_out=305),
+        dict(driver="TSU", lap=37, start=390, end=480, compound="None", tyre_life=None),
+    ])
+    assert laps["compound"].isna().tolist() == [False, False, True, True]
+    assert laps.loc[("TSU", 35), "pit_kind"] == "unknown"     # which tyres went on is not known
+    assert laps["stint"].isna().tolist() == [False, False, True, True]
+    contracts.validate(laps.reset_index(), contracts.SILVER_LAPS, "Silver laps")
+
+
 def test_duplicates_and_unidentifiable_rows_are_dropped_and_counted():
     _, report = silver([
         dict(driver="AAA", lap=2, start=100, end=190),
