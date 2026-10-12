@@ -152,7 +152,7 @@ class ChartCanvas(FigureCanvasQTAgg):
         self.draw_idle()
 
 
-def _cell(text: str, align=Qt.AlignCenter, colour: Optional[str] = None, bold=False, tip: str = "") -> QTableWidgetItem:
+def table_cell(text: str, align=Qt.AlignCenter, colour: Optional[str] = None, bold=False, tip: str = "") -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setTextAlignment(align | Qt.AlignVCenter)
     if colour:
@@ -280,11 +280,11 @@ class PaceTab(QWidget):
             ends = reason in ("all laps", "pace laps")
             colour = ACCENT if reason == "pace laps" else (DIM if r["laps"] == 0 and not ends else TEXT)
             tip = REASON_NOTES.get(reason, "")
-            self.ledger_table.setItem(i, 0, _cell(reason, Qt.AlignLeft, colour, bold=ends, tip=tip))
-            self.ledger_table.setItem(i, 1, _cell(f"{r['laps']:,}", Qt.AlignRight, colour, bold=ends, tip=tip))
+            self.ledger_table.setItem(i, 0, table_cell(reason, Qt.AlignLeft, colour, bold=ends, tip=tip))
+            self.ledger_table.setItem(i, 1, table_cell(f"{r['laps']:,}", Qt.AlignRight, colour, bold=ends, tip=tip))
             share = "" if reason == "all laps" else f"{100 * r['share']:.1f} %"
-            self.ledger_table.setItem(i, 2, _cell(share, Qt.AlignRight, colour, tip=tip))
-            self.ledger_table.setItem(i, 3, _cell(f"{r['remaining']:,}", Qt.AlignRight, DIM, tip=tip))
+            self.ledger_table.setItem(i, 2, table_cell(share, Qt.AlignRight, colour, tip=tip))
+            self.ledger_table.setItem(i, 3, table_cell(f"{r['remaining']:,}", Qt.AlignRight, DIM, tip=tip))
         rows = sum(self.ledger_table.rowHeight(i) for i in range(self.ledger_table.rowCount()))
         frame = 2 * self.ledger_table.frameWidth()
         self.ledger_table.setFixedHeight(self.ledger_table.horizontalHeader().sizeHint().height() + rows + frame)

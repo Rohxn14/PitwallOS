@@ -104,13 +104,13 @@ def nearest(points_px: np.ndarray, x: float, y: float, radius: float) -> Optiona
     return i if d2[i] <= radius ** 2 else None
 
 
-def _start(fig: Figure):
+def start_figure(fig: Figure):
     fig.clear()
     fig.set_layout_engine("constrained")
     fig.set_facecolor(SURFACE)
 
 
-def _style(ax):
+def style_axes(ax):
     """Recessive chrome: hairline solid grid, two muted spines, small muted ticks."""
     ax.set_facecolor(SURFACE)
     for side in ("top", "right"):
@@ -123,11 +123,11 @@ def _style(ax):
     ax.set_axisbelow(True)
 
 
-def _title(fig: Figure, text: str):
+def figure_title(fig: Figure, text: str):
     fig.suptitle(text, x=0.008, ha="left", color=INK, fontsize=11, fontweight="bold")
 
 
-def _empty(fig: Figure, text: str):
+def empty_figure(fig: Figure, text: str):
     ax = fig.add_subplot()
     ax.set_facecolor(SURFACE)
     ax.set_axis_off()
@@ -180,14 +180,14 @@ def _neutralised_bands(ax, pace: RacePace) -> int:
 def draw_lap_times(fig: Figure, pace: RacePace, driver: str,
                    threshold_sec: float = OUTLIER_THRESHOLD_SEC) -> List[HoverPoints]:
     """One driver's race, lap by lap (see the module note). Laps slower than the scale sit on its top edge (▲)."""
-    _start(fig)
+    start_figure(fig)
     laps = pace.laps[pace.laps["driver_code"] == driver].sort_values("lap_number")
     timed = laps[laps["lap_time_sec"].notna()].reset_index(drop=True)
     if timed.empty:
-        _empty(fig, f"No timed laps for {driver}")
+        empty_figure(fig, f"No timed laps for {driver}")
         return []
     ax = fig.add_subplot()
-    _style(ax)
+    style_axes(ax)
 
     is_pace = timed["is_pace_lap"].to_numpy(dtype=bool)
     is_out = timed["is_outlier"].to_numpy(dtype=bool)
@@ -247,7 +247,7 @@ def draw_lap_times(fig: Figure, pace: RacePace, driver: str,
         parts.append(f"{no_time} without a time (not drawn)")
     if off.any():
         parts.append(f"{int(off.sum())} off the scale (▲ on the top edge)")
-    _title(fig, f"Lap times · {driver}")
+    figure_title(fig, f"Lap times · {driver}")
     ax.set_title(" · ".join(parts), loc="left", color=MUTED, fontsize=8.5, pad=8 + 10 * levels)
 
     handles = [Line2D([], [], linestyle="none", marker=compound_marker(c), markersize=6.5,
@@ -275,13 +275,13 @@ def draw_lap_times(fig: Figure, pace: RacePace, driver: str,
 
 def draw_compound_pace(fig: Figure, pace: RacePace) -> List[HoverPoints]:
     """Box per compound over every driver's pace laps. Raw: not fuel-corrected (see laps.py)."""
-    _start(fig)
+    start_figure(fig)
     table = pace.by_compound
     if table.empty:
-        _empty(fig, "No pace laps")
+        empty_figure(fig, "No pace laps")
         return []
     ax = fig.add_subplot()
-    _style(ax)
+    style_axes(ax)
     records = table.to_dict("records")
     stats = [{"med": r["median_sec"], "q1": r["q25_sec"], "q3": r["q75_sec"], "whislo": r["p05_sec"],
               "whishi": r["p95_sec"], "fliers": [], "label": compound_name(r["compound"])} for r in records]
@@ -303,7 +303,7 @@ def draw_compound_pace(fig: Figure, pace: RacePace) -> List[HoverPoints]:
     ax.set_xlim(-0.6, len(stats) - 0.4)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
     ax.set_ylabel("lap time (s)", color=MUTED, fontsize=8.5)
-    _title(fig, "Raw pace by compound")
+    figure_title(fig, "Raw pace by compound")
     ax.set_title("Every driver's pace laps. Raw, not fuel-corrected: a compound run late\n"
                  "in the race (lighter car, faster track) looks faster than it is.\n"
                  "Box = middle half of laps, line = median, whiskers = 5th to 95th percentile.",
@@ -329,17 +329,17 @@ def driver_chart_rows(pace: RacePace, min_laps: int = MIN_DRIVER_LAPS) -> int:
 def draw_driver_pace(fig: Figure, pace: RacePace, highlight: Optional[str] = None,
                      min_laps: int = MIN_DRIVER_LAPS) -> List[HoverPoints]:
     """One panel per compound: each driver's median pace lap and the middle half of their laps, fastest on top."""
-    _start(fig)
+    start_figure(fig)
     table = pace.by_driver[pace.by_driver["laps"] >= min_laps]
     if table.empty:
-        _empty(fig, f"No driver has {min_laps} or more pace laps on one compound")
+        empty_figure(fig, f"No driver has {min_laps} or more pace laps on one compound")
         return []
     compounds = sorted(table["compound"].drop_duplicates().tolist(), key=compound_rank)
     axes = fig.subplots(1, len(compounds), squeeze=False)[0]
     tallest = driver_chart_rows(pace, min_laps)
     points = []
     for ax, compound in zip(axes, compounds):
-        _style(ax)
+        style_axes(ax)
         ax.grid(axis="y", visible=False)
         ax.grid(axis="x", color=GRID, linewidth=0.8)
         same = table["compound"].isna() if _missing(compound) else table["compound"].eq(compound).fillna(False)
@@ -369,7 +369,7 @@ def draw_driver_pace(fig: Figure, pace: RacePace, highlight: Optional[str] = Non
                  f"middle half {r['q25_sec']:.2f} to {r['q75_sec']:.2f} s · fastest {r['fastest_sec']:.3f} s"
                  for r in rows.to_dict("records")]
         points.append(HoverPoints(ax, rows["median_sec"].to_numpy(dtype=float), y, texts))
-    _title(fig, "Driver pace by compound · fastest first")
+    figure_title(fig, "Driver pace by compound · fastest first")
     fig.supxlabel(f"median pace lap (s) · dot = median, bar = middle half of that driver's pace laps · raw, not "
                   f"fuel-corrected · drivers with {min_laps} or more pace laps on the compound",
                   color=MUTED, fontsize=8)

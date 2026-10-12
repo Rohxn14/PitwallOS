@@ -11,7 +11,7 @@ before is built without downloading anything.
 
 The tabs show what the lake holds as facts (src/analytics/race_overview.py) and each Phase 2 step
 once it is built and golden-tested: the Pace tab is step 1 (src/analytics/laps.py and
-neutralisations.py, drawn by src/gui/pace_tab.py). Later steps stay placeholders until then; the
+neutralisations.py, drawn by src/gui/pace_tab.py), the Stops tab step 2 (src/analytics/stops.py). Later steps stay placeholders until then; the
 old engine's numbers (src/analytics/race_engine.py, known wrong) are deliberately not shown.
 """
 
@@ -31,11 +31,13 @@ from PySide6.QtWidgets import (
 )
 
 from src.analytics.laps import RacePace, load_race_pace
+from src.analytics.stops import race_stops
 from src.analytics.race_overview import DNF_MARK, RaceOverview, lake_status, load_overview
 from src.gui.analysis_theme import (
     ACCENT, BAD, BG, BORDER, COMPOUND_COLOURS, COMPOUND_TEXT, DIM, GOOD, PANEL, TEXT,
 )
 from src.gui.pace_tab import PACE_TABLE_COLUMNS, PaceTab
+from src.gui.stops_tab import StopsTab
 from src.pipeline import lake
 
 STYLE = f"""
@@ -67,9 +69,10 @@ PHASE2_STEPS = [
      "is not), with the exclusion ledger; outliers are > 3 s slower than the median of the 5 clean laps around "
      "them; raw pace by compound. SC / VSC / red-flag periods from the official track status, in the leader's laps.",
      "Race Control's log: Qatar SC 1-4, SC 35-39, VSC 40, SC 40-42; British none", True),
-    ("2", "Stops and pit loss", "One row per tyre change. Loss = in-lap + out-lap - 2 x reference pace; "
-     "circuit loss = median of green stops; SC stops measured separately.",
-     "Per-driver stop counts; your predicted loss, written first", False),
+    ("2", "Stops and pit loss", "Stops tab: one row per tyre change. Loss = in-lap + out-lap - reference: the "
+     "driver's pace around the stop (green), or the cars that stayed out (SC, VSC, lap 1); red-flag tyre changes "
+     "kept, loss unknown. Circuit loss = median of green stops.",
+     "British 45 tyre changes (HAM laps 27, 38), Qatar 26; your prediction 23 s green, 13 s under SC", True),
     ("3", "Fuel-corrected degradation", "Per-stint slope +- SE, per-compound slope pooled across stints, "
      "joint fuel-coefficient cross-check.", "Your expected medium slope, written first", False),
     ("4", "Dirty air", "Fixed-effects coefficient beta +- SE, then gap bins.", "beta >= 0, caveats written down", False),
@@ -287,6 +290,8 @@ class RaceAnalysisWindow(QMainWindow):
         self.tabs.addTab(self._build_strategy_tab(), "Strategy")
         self.pace_tab = PaceTab()
         self.tabs.addTab(self.pace_tab, "Pace")
+        self.stops_tab = StopsTab()
+        self.tabs.addTab(self.stops_tab, "Stops")
         self.tabs.addTab(self._build_laps_tab(), "Laps")
         self.tabs.addTab(self._build_quality_tab(), "Data quality")
         self.tabs.addTab(self._build_phase2_tab(), "Phase 2 analytics")
@@ -525,6 +530,12 @@ class RaceAnalysisWindow(QMainWindow):
         except Exception as e:   # the other tabs still work; this one says why it cannot
             self.pace = None
             self.pace_tab.show_error(f"{type(e).__name__}: {e}")
+        try:
+            if self.pace is None:
+                raise ValueError("the pace classification is missing (see the Pace tab)")
+            self.stops_tab.set_race(race_stops(self.pace.laps))
+        except Exception as e:
+            self.stops_tab.show_error(f"{type(e).__name__}: {e}")
         self._load_laps_table()
         self.stack.setCurrentIndex(1)
 
