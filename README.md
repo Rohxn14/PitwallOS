@@ -1,273 +1,177 @@
-# F1 Race Replay 🏎️ 🏁
+# PitwallOS 🏎️
 
-A Python application for visualizing Formula 1 race telemetry and replaying race events with interactive controls and a graphical interface.
+An end-to-end Formula 1 data engineering, analytics and machine-learning project: a data lake
+built from official timing data, a strategy analytics engine, pace models and, in time, a race
+simulator.
+
+PitwallOS is built on top of **[F1 Race Replay](https://github.com/IAmTomShaw/f1-race-replay) by
+[Tom Shaw](https://tomshaw.dev)**, a Python app that replays any race on a 2D track map with live
+telemetry. The replay is still here and works as before (see [Race replay](#race-replay)).
+PitwallOS adds everything that turns the data into analysis.
 
 ![Race Replay Preview](./resources/preview.png)
 
-> **HUGE NEWS:** The telemetry stream feature is now in a usable state. See the [telemetry demo documentation](./telemetry.md) for access instructions, data format details, and usage ideas.
+## The idea everything is built around
 
-## Features
+    lap time = base pace (driver, car, track)
+             + fuel effect
+             + tyre effect (compound, age)
+             + traffic effect (dirty air)
+             + track evolution
+             + noise
 
-- **Race Replay Visualization:** Watch the race unfold with real-time driver positions on a rendered track.
-- **Safety Car Visualization:** See the Safety Car deploy from pit lane, lead the field, and return to pits — with animated transitions and pulsing glow effects.
-- **Insights Menu:** Floating menu for quick access to telemetry analysis tools (launches automatically with replay).
-- **Leaderboard:** See live driver positions and current tyre compounds.
-- **Lap & Time Display:** Track the current lap and total race time.
-- **Driver Status:** Drivers who retire or go out are marked as "OUT" on the leaderboard.
-- **Interactive Controls:** Pause, rewind, fast forward, and adjust playback speed using on-screen buttons or keyboard shortcuts.
-- **Legend:** On-screen legend explains all controls.
-- **Driver Telemetry Insights:** View speed, gear, DRS status, and current lap for selected drivers when selected on the leaderboard.
+Each phase of the project works on these terms. The analytics measure them from real races, the
+models learn them, and the simulator uses them to replay strategies. Every phase is checked by
+the one after it, and every number is tested against a known fact of a real race.
 
-## Controls
+## What is built
 
-- **Pause/Resume:** SPACE or Pause button
-- **Rewind/Fast Forward:** ← / → or Rewind/Fast Forward buttons
-- **Playback Speed:** ↑ / ↓ or Speed button (cycles through 0.5x, 1x, 2x, 4x)
-- **Set Speed Directly:** Keys 1–4
-- **Restart**: **R** to restart replay
-- **Toggle DRS Zone**: **D** to hide/show DRS Zone
-- **Toggle Progress Bar**: **B** to hide/show progress bar
-- **Toggle Driver Names**: **L** to hide/show driver names on track
-- **Select driver/drivers**: Click to select driver or shift click to select multiple drivers
+### 1. The data lake (Bronze → Silver → Gold)
 
+`src/pipeline/` downloads races with [FastF1](https://github.com/theOehrly/Fast-F1) and stores
+them in three layers:
 
-## Safety Car
+| Layer | Holds | Rules |
+|---|---|---|
+| **Bronze** | Raw FastF1 tables, as delivered (laps, weather, track status, race control, results, telemetry) | Never changed after download |
+| **Silver** | Cleaned laps with flags: pit passage kind (tyre change, pass-through, retired), stints, safety car / VSC / red flag, clean lap, wet tyre, weather; telemetry on a shared 10 Hz clock | Never invent a value; never delete a lap, flag it |
+| **Gold** | One row per lap, ready for models: fuel estimate, gaps, recent pace, next-lap target | Every feature is known when the lap ends (a test enforces no leakage) |
 
-The replay includes a **simulated Safety Car** that appears on track whenever the F1 data indicates a Safety Car deployment (track status code `4`). Since the F1 API does not provide GPS telemetry for the actual Safety Car, its position is simulated based on the race leader's position.
+Every table is checked against a data contract (pandera) before it is written, and every dropped
+row is counted.
 
-### How it works
+### 2. Backfill: three full seasons
 
-- **Data source:** The Safety Car deployment timing comes from the real F1 track status data via FastF1 (`session.track_status`).
-- **Position simulation:** The SC is placed ~500 meters ahead of the race leader on the track reference polyline. This approximates where the real SC would be relative to the field.
-- **Three animation phases:**
-  - **Deploying** — The SC animates from the pit lane onto the track over ~3 seconds, with a pulsing glow and "SC DEPLOYING" label.
-  - **On Track** — The SC drives ahead of the leader with a steady amber glow and "SC" label.
-  - **Returning** — The SC animates back to the pit lane over ~3 seconds, with a fading pulsing glow and "SC IN" label.
-- **Visual appearance:** The SC is drawn as a larger orange/amber circle (8px radius vs 6px for regular cars) with an orange outline ring and always-visible "SC" label.
+All 70 races of 2023, 2024 and 2025 are in the lake (77,713 laps). One command rebuilds a season,
+resumes where it stopped and writes a data-quality report per race:
 
-### Technical details
-
-The SC position computation happens in `_compute_safety_car_positions()` in `src/f1_data.py`. Each frame gets a `safety_car` field:
-
-```json
-{
-  "safety_car": {
-    "x": 1234.56,
-    "y": 7890.12,
-    "phase": "on_track",
-    "alpha": 1.0
-  }
-}
+```bash
+python -m src.pipeline.backfill --season 2023 2024 2025
 ```
 
-| Field | Description |
-|-------|-------------|
-| `x`, `y` | World coordinates of the SC |
-| `phase` | `"deploying"`, `"on_track"`, or `"returning"` |
-| `alpha` | Opacity value from `0.0` (invisible) to `1.0` (fully visible), used for fade in/out animation |
+### 3. Analytics, step by step
 
-> **Note:** If you have existing cached `.pkl` files from previous runs, you must re-run with `--refresh-data` to generate SC position data. Older cached files will simply show no Safety Car.
+The analytics are being rebuilt one step at a time. Each step starts from a written design and a
+predicted number, and ends with golden tests on real races.
 
-## Qualifying Session Support (in development)
+- **Done: lap selection and neutralisations.** Every lap gets one status: a pace lap, or the
+  first reason it is not (lap 1, safety car, pit lap, outlier...). A ledger counts every exclusion.
+  Safety car, VSC and red-flag periods come from the official track status, counted in the
+  leader's laps; they match Race Control's own log.
+- **Next:** pit-stop loss, fuel-corrected tyre degradation, dirty air, measured undercuts.
 
-Recently added support for Qualifying session replays with telemetry visualization including speed, gear, throttle, and brake over the lap distance. This feature is still being refined.
+### 4. The Analyze window
 
-## Requirements
+`python main.py` → pick a race → **Analyze**. Without running the replay, it shows the result,
+the tyre strategies driven, the data quality and a **Pace** tab: lap-time charts per driver,
+raw pace by compound, driver pace on each compound and the exclusion ledger. If a race is not in
+the lake yet, the window builds it first.
 
-- Python 3.11+
-- [FastF1](https://github.com/theOehrly/Fast-F1)
-- [Arcade](https://api.arcade.academy/en/latest/)
-- numpy
+## Roadmap
 
-Install dependencies:
+| Phase | Work | Status |
+|---|---|---|
+| 0. Pipeline | Bronze / Silver / Gold, data contracts, tests | Done |
+| 1. Backfill | 2023-2025, a quality report per race | Done |
+| 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | In progress (step 1 done) |
+| 3. Pace model | A ladder of models, each beating the last on races it has never seen: persistence → linear decomposition → state-space tyre model → gradient boosting | Planned |
+| 4. Race simulator | Replay the strategies actually driven, then Monte Carlo over safety-car timing and pace noise for "what if" questions | Planned |
+| 5. Telemetry | Corner-by-corner driver comparison; minimum-speed fade as an early sign of tyre wear | Planned |
+| 6. Presentation | A web front end over the simulator and a written case study of one race | Planned |
+
+## Getting started
+
+Requires Python 3.10+ (developed on 3.11; tests run on 3.10, 3.11 and 3.12).
+
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/Rohxn14/PitwallOS
+cd PitwallOS
+python -m venv venv
+# Windows: .\venv\Scripts\activate      macOS / Linux: source venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest            # run the test suite
+python main.py              # pick a race, then Replay or Analyze
 ```
 
-FastF1 cache folder will be created automatically on first run. If it is not created, you can manually create a folder named `.fastf1-cache` in the project root
-> **First Run Notice:** Loading a session for the first time may take noticeably longer because telemetry data must be downloaded, processed, and cached locally. Subsequent launches of the same session are significantly faster..
+Build races into the lake:
 
-## Environment Setup
-
-To get started with this project locally, you can follow these steps:
-
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/Rohxn14/PitwallOS
-    cd PitwallOS
-    ```
-2. **Create a Virtual Environment:**
-    This process differs based on your operating system.
-    - On macOS/Linux:
-      ```bash
-      python3 -m venv venv
-      source venv/bin/activate
-      ```
-    - On Windows:
-      ```bash
-      python -m venv venv
-      .\venv\Scripts\activate
-      ```
-3. **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-4. **Run the Application:**
-    You can now run the application using the instructions in the Usage section below.
-## Troubleshooting
-If the pull data proccess fails, run:
 ```bash
-pip install --upgrade fastf1
+python -m src.pipeline.runner --year 2024 --round 12 --no-telemetry   # one race, laps only
+python -m src.pipeline.backfill --season 2024                         # a whole season
+python -m src.analytics.laps --season 2024                            # pace laps for every race
 ```
 
-## Usage
+The first download of a race takes a while; FastF1 caches it in `.fastf1-cache/` and the replay
+and the pipeline share that cache. The lake lives in `data/` and can always be rebuilt.
 
-**DEFAULT GUI MENU:** To use the new GUI menu system, you can simply run:
+If downloading fails, `python -m pip install --upgrade fastf1` usually fixes it.
+
+## Race replay
+
+The replay comes from F1 Race Replay (Tom Shaw and its contributors) and is kept as it was, with a
+few fixes (an accurate leaderboard at the end of a race, rewind-safe insight windows).
+
+**Features**
+
+- Watch the race unfold with live driver positions on the track map
+- Leaderboard with positions, tyre compounds and retired drivers marked "OUT"
+- Simulated safety car, placed ahead of the leader whenever the official feed shows one
+- Pause, rewind, fast forward and playback speed controls
+- Driver telemetry (speed, gear, DRS) for the selected drivers
+- Insights menu with live telemetry windows, and qualifying replays (in development)
+
+**Controls**
+
+- **Pause / resume:** SPACE
+- **Rewind / fast forward:** ← / →
+- **Playback speed:** ↑ / ↓ (0.5x, 1x, 2x, 4x), or keys 1-4
+- **Restart:** R · **DRS zones:** D · **Progress bar:** B · **Driver names:** L
+- **Select drivers:** click, or shift-click for several
+
+**From the command line**
+
 ```bash
-python main.py
-```
-
-![GUI Menu Preview](./resources/gui-menu.png)
-
-This will open a graphical interface where you can select the year and round of the race weekend you want to replay. This is still a new feature, so please report any issues you encounter.
-
-**OPTIONAL CLI MENU:** To use the CLI menu system, you can simply run:
-```bash
-python main.py --cli
-```
-
-![CLI Menu Preview](./resources/cli-menu.gif)
-
-This will prompt you with series of questions and a list of options to make your choice from using the arrow keys and enter key.
-
-If you would already know the year and round number of the session you would like to watch, you run the commands directly as follows:
-
-Run the main script and specify the year and round:
-```bash
-python main.py --viewer --year 2025 --round 12
-```
-
-To run without HUD:
-```bash
-python main.py --viewer --year 2025 --round 12 --no-hud
-```
-
-To run a Sprint session (if the event has one), add `--sprint`:
-```bash
-python main.py --viewer --year 2025 --round 12 --sprint
-```
-
-The application will load a pre-computed telemetry dataset if you have run it before for the same event. To force re-computation of telemetry data, use the `--refresh-data` flag:
-```bash
-python main.py --viewer --year 2025 --round 12 --refresh-data
-```
-
-### Qualifying Session Replay
-
-To run a Qualifying session replay, use the `--qualifying` flag:
-```bash
+python main.py --cli                                      # menu in the terminal
+python main.py --viewer --year 2025 --round 12            # a race directly
+python main.py --viewer --year 2025 --round 12 --sprint   # the sprint
 python main.py --viewer --year 2025 --round 12 --qualifying
+python main.py --viewer --year 2025 --round 12 --refresh-data   # recompute the cached replay
 ```
 
-To run a Sprint Qualifying session (if the event has one), add `--sprint`:
-```bash
-python main.py --viewer --year 2025 --round 12 --qualifying --sprint
+**Custom insight windows:** subclass `PitWallWindow` to build a window fed by the live telemetry
+stream. See [docs/PitWallWindow.md](./docs/PitWallWindow.md),
+[docs/InsightsMenu.md](./docs/InsightsMenu.md) and [telemetry.md](./telemetry.md).
+
+**Known issue:** in a `conda` environment you may see `Unable to create an OpenGL 3.3+ context`;
+`conda install -c conda-forge libstdcxx-ng` fixes it (thanks to @el-mandaloriano, #12).
+
+## Project layout
+
+```
+main.py                  entry point: session picker, replay or analyze
+src/pipeline/            the data lake: extractor (Bronze), cleaner (Silver), feature store (Gold),
+                         contracts, backfill, quality reports
+src/analytics/           race overview, lap selection (laps.py), neutralised periods
+src/gui/                 session picker, Analyze window and its charts, insights menu
+src/interfaces/          race and qualifying replay (Arcade)
+src/insights/            live telemetry windows
+src/lib/                 running order, tyres, time, settings
+tests/                   unit tests and golden tests on real races (fixtures in tests/fixtures/)
+docs/                    guides, and a catalogue of F1 strategies
 ```
 
-## File Structure
+## Credits
 
-```
-PitwallOS/
-├── main.py                    # Entry point, handles session loading and starts the replay
-├── requirements.txt           # Python dependencies
-├── README.md                  # Project documentation
-├── roadmap.md                 # Planned features and project vision
-├── resources/
-│   └── preview.png           # Race replay preview image
-├── src/
-│   ├── f1_data.py            # Telemetry loading, processing, frame generation & SC position simulation
-│   ├── arcade_replay.py      # Visualization and UI logic
-│   └── ui_components.py      # UI components like buttons and leaderboard
-│   ├── interfaces/
-│   │   └── qualifying.py     # Qualifying session interface and telemetry visualization
-│   │   └── race_replay.py    # Race replay interface, SC rendering & telemetry visualization
-│   └── lib/
-│       └── tyres.py          # Type definitions for telemetry data structures
-│       └── time.py           # Time formatting utilities
-└── .fastf1-cache/            # FastF1 cache folder (created automatically upon first run)
-└── computed_data/            # Computed telemetry data (created automatically upon first run)
-```
+- **[Tom Shaw](https://tomshaw.dev)** created [F1 Race Replay](https://github.com/IAmTomShaw/f1-race-replay),
+  the replay, track map, insights menu and telemetry stream this project is built on.
+- The F1 Race Replay contributors, listed in [contributors.md](./contributors.md).
+- **[FastF1](https://github.com/theOehrly/Fast-F1)**, which makes the official timing data accessible.
 
-## Building Custom Telemetry Windows
+## License
 
-When you start a race replay, an **Insights Menu** automatically appears, providing quick access to various telemetry analysis tools. You can easily create custom insight windows that receive live telemetry data using the `PitWallWindow` base class:
+MIT License, as the original project.
 
-```python
-from src.gui.pit_wall_window import PitWallWindow
+## Disclaimer
 
-class MyInsightWindow(PitWallWindow):
-    def setup_ui(self):
-        # Create your custom UI
-        pass
-    
-    def on_telemetry_data(self, data):
-        # Process telemetry data
-        pass
-```
-
-The `PitWallWindow` base class handles all telemetry stream connection logic automatically, allowing you to focus solely on your window's functionality.
-
-**Key Features:**
-- Automatic connection to telemetry stream
-- Built-in status bar with connection state
-- Proper cleanup on window close
-- Simple API - just implement `setup_ui()` and `on_telemetry_data()`
-
-**Documentation & Examples:**
-- See [docs/PitWallWindow.md](./docs/PitWallWindow.md) for complete guide
-- See [docs/InsightsMenu.md](./docs/InsightsMenu.md) for adding insights to the menu
-- Run the example: `python -m src.gui.example_pit_wall_window`
-- Test the menu: `python -m src.gui.insights_menu`
-
-## Customization
-
-- Change track width, colors, and UI layout in `src/arcade_replay.py`.
-- Adjust telemetry processing in `src/f1_data.py`.
-- Create custom telemetry windows using `PitWallWindow` base class (see above).
-
-## Contributing
-
-There have been several contributions from the community that have helped enhance this project. I have added a [contributors.md](./contributors.md) file to acknowledge those who have contributed features and improvements.
-
-If you would like to contribute, feel free to:
-
-- Open pull requests for UI improvements or new features.
-- Report issues on GitHub.
-
-Please see [roadmap.md](./roadmap.md) for planned features and project vision.
-
-# Known Issues
-
-- If you are using a `conda` environment, you might need to install a few extra packages if you get this error:
-```
-arcade.application.NoOpenGLException: Unable to create an OpenGL 3.3+ context. Check to make sure your system supports OpenGL 3.3 or higher
-```
-You can easily fix this by running this command:
-```bash
-$ conda install -c conda-forge libstdcxx-ng
-```
-Thanks to @el-mandaloriano for showing how to resolve this issue: #12
-- The leaderboard appears to be inaccurate for the first few corners of the race. The leaderboard is also temporarily affected by a driver going in the pits. At the end of the race, the leaderboard is sometimes affected by the drivers' final x,y positions being further ahead than other drivers. These are known issues caused by inaccuracies in the telemetry and are being worked on for future releases. It's likely that these issues will be fixed in stages as improving the leaderboard accuracy is a complex task.
-
-## 📝 License
-
-This project is licensed under the MIT License.
-
-## ⚠️ Disclaimer
-
-No copyright infringement intended. Formula 1 and related trademarks are the property of their respective owners. All data used is sourced from publicly available APIs and is used for educational and non-commercial purposes only.
-
----
-
-Built with ❤️ by [Tom Shaw](https://tomshaw.dev)
+Unofficial project, for education and non-commercial use. Formula 1 and related trademarks are the
+property of their respective owners. All data comes from publicly available sources.
