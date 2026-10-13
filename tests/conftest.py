@@ -7,6 +7,9 @@ import pytest
 
 FIXTURE_LAKE = Path(__file__).parent / "fixtures" / "lake"
 GOLDEN_RACES = ((2024, 12), (2024, 23))   # British GP (wet/dry, no safety car), Qatar GP (safety cars)
+# Kept in its own lake so the tests above that count the races of 2024 are not affected.
+HUNGARY_FIXTURE_LAKE = Path(__file__).parent / "fixtures" / "lake_hungary"
+HUNGARY = (2024, 13)                      # Hungarian GP: Norris undercuts Piastri at the second stops
 
 
 @pytest.fixture
@@ -33,3 +36,23 @@ def golden_silver_laps(tmp_path_factory):
         build_silver(*race, "R", lake_root=str(root), telemetry=False)
         out[race] = lake.read_table(lake.table_path(lake.SILVER, "laps", *race, "R", str(root)))
     return out
+
+
+@pytest.fixture
+def hungary_lake(tmp_path):
+    """A temporary lake pre-loaded with real Bronze lap data for the 2024 Hungarian GP."""
+    root = tmp_path / "lake_hungary"
+    shutil.copytree(HUNGARY_FIXTURE_LAKE, root)
+    return str(root)
+
+
+@pytest.fixture(scope="session")
+def hungary_silver_laps(tmp_path_factory):
+    """Silver laps of the 2024 Hungarian GP, built once per test session. Treat as read-only."""
+    from src.pipeline import lake
+    from src.pipeline.cleaner import build_silver
+
+    root = tmp_path_factory.mktemp("hungary") / "lake"
+    shutil.copytree(HUNGARY_FIXTURE_LAKE, root)
+    build_silver(*HUNGARY, "R", lake_root=str(root), telemetry=False)
+    return lake.read_table(lake.table_path(lake.SILVER, "laps", *HUNGARY, "R", str(root)))

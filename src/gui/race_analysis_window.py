@@ -11,8 +11,11 @@ before is built without downloading anything.
 
 The tabs show what the lake holds as facts (src/analytics/race_overview.py) and each Phase 2 step
 once it is built and golden-tested: the Pace tab is step 1 (src/analytics/laps.py and
-neutralisations.py, drawn by src/gui/pace_tab.py), the Stops tab step 2 (src/analytics/stops.py). Later steps stay placeholders until then; the
-old engine's numbers (src/analytics/race_engine.py, known wrong) are deliberately not shown.
+neutralisations.py, drawn by src/gui/pace_tab.py), the Stops tab step 2 (src/analytics/stops.py), the
+Degradation tab step 3 (src/analytics/degradation.py), the Dirty air tab step 4
+(src/analytics/dirty_air.py), the Undercuts tab step 5 (src/analytics/undercuts.py). The Race report
+tab, step 6 (src/analytics/report.py, drawn by src/gui/report_tab.py), puts every one of those numbers
+on one page with its n, uncertainty and sanity check.
 """
 
 from __future__ import annotations
@@ -31,12 +34,20 @@ from PySide6.QtWidgets import (
 )
 
 from src.analytics.laps import RacePace, load_race_pace
+from src.analytics.degradation import race_degradation
+from src.analytics.dirty_air import race_dirty_air
+from src.analytics.undercuts import race_undercuts
+from src.analytics.report import RaceReport
 from src.analytics.stops import race_stops
 from src.analytics.race_overview import DNF_MARK, RaceOverview, lake_status, load_overview
 from src.gui.analysis_theme import (
     ACCENT, BAD, BG, BORDER, COMPOUND_COLOURS, COMPOUND_TEXT, DIM, GOOD, PANEL, TEXT,
 )
 from src.gui.pace_tab import PACE_TABLE_COLUMNS, PaceTab
+from src.gui.degradation_tab import DegradationTab
+from src.gui.dirty_air_tab import DirtyAirTab
+from src.gui.undercuts_tab import UndercutsTab
+from src.gui.report_tab import ReportTab
 from src.gui.stops_tab import StopsTab
 from src.pipeline import lake
 
@@ -60,28 +71,6 @@ STYLE = f"""
     QProgressBar {{ background: #1E1E1E; border: 1px solid {BORDER}; border-radius: 4px; height: 8px; }}
     QProgressBar::chunk {{ background: {ACCENT}; }}
 """
-
-# Phase 2 of the roadmap (CLAUDE.md): what each step will add to this window, and its golden test.
-PHASE2_STEPS = [
-    ("0", "Silver stint and pit-passage repair", "Stops = tyre changes; pass-throughs are not stops.",
-     "British 45 tyre changes; Qatar 26 + 34 pass-throughs", True),
-    ("1", "Lap selection and neutralisations", "Pace tab: every lap gets one status (pace, or the first reason it "
-     "is not), with the exclusion ledger; outliers are > 3 s slower than the median of the 5 clean laps around "
-     "them; raw pace by compound. SC / VSC / red-flag periods from the official track status, in the leader's laps.",
-     "Race Control's log: Qatar SC 1-4, SC 35-39, VSC 40, SC 40-42; British none", True),
-    ("2", "Stops and pit loss", "Stops tab: one row per tyre change. Loss = in-lap + out-lap - reference: the "
-     "driver's pace around the stop (green), or the cars that stayed out (SC, VSC, lap 1); red-flag tyre changes "
-     "kept, loss unknown. Circuit loss = median of green stops.",
-     "British 45 tyre changes (HAM laps 27, 38), Qatar 26; your prediction 23 s green, 13 s under SC", True),
-    ("3", "Fuel-corrected degradation", "Per-stint slope +- SE, per-compound slope pooled across stints, "
-     "joint fuel-coefficient cross-check.", "Your expected medium slope, written first", False),
-    ("4", "Dirty air", "Fixed-effects coefficient beta +- SE, then gap bins.", "beta >= 0, caveats written down", False),
-    ("5", "Undercuts, measured", "Real attempts: gap before and after both stops, outcome, gain split into "
-     "in-lap / out-lap / laps between.", "A hand-verified case", False),
-    ("6", "Race report", "RaceReport in this window with n, uncertainty and every exclusion; delete "
-     "race_engine.py.", "Sanity ranges across the Phase 1 backfill", False),
-]
-
 
 def _cell_text(value) -> str:
     """Missing values show as an em dash, never as an invented number."""
@@ -234,6 +223,7 @@ class RaceAnalysisWindow(QMainWindow):
         self.event_name = event_name or f"Round {round_number}"
         self.overview: Optional[RaceOverview] = None
         self.pace: Optional[RacePace] = None
+        self.report: Optional[RaceReport] = None
         self.worker: Optional[PipelineBuildThread] = None
         self._laps_df: Optional[pd.DataFrame] = None
 
@@ -287,14 +277,21 @@ class RaceAnalysisWindow(QMainWindow):
         self.stack.addWidget(self._build_waiting_page())
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_result_tab(), "Result")
+        self.report_tab = ReportTab()
+        self.tabs.addTab(self.report_tab, "Race report")
         self.tabs.addTab(self._build_strategy_tab(), "Strategy")
         self.pace_tab = PaceTab()
         self.tabs.addTab(self.pace_tab, "Pace")
         self.stops_tab = StopsTab()
         self.tabs.addTab(self.stops_tab, "Stops")
+        self.degradation_tab = DegradationTab()
+        self.tabs.addTab(self.degradation_tab, "Degradation")
+        self.dirty_air_tab = DirtyAirTab()
+        self.tabs.addTab(self.dirty_air_tab, "Dirty air")
+        self.undercuts_tab = UndercutsTab()
+        self.tabs.addTab(self.undercuts_tab, "Undercuts")
         self.tabs.addTab(self._build_laps_tab(), "Laps")
         self.tabs.addTab(self._build_quality_tab(), "Data quality")
-        self.tabs.addTab(self._build_phase2_tab(), "Phase 2 analytics")
         self.stack.addWidget(self.tabs)
         outer.addWidget(self.stack, 1)
 
@@ -424,40 +421,6 @@ class RaceAnalysisWindow(QMainWindow):
         lay.addStretch()
         return w
 
-    def _build_phase2_tab(self) -> QWidget:
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(14, 14, 14, 14)
-        lay.setSpacing(10)
-        intro = QLabel("These numbers have to be estimated, so each one waits for its Phase 2 step: your design note "
-                       "and expected number first, then the code, then a golden test on a real race. Until then "
-                       "this window shows nothing rather than a number that might be wrong.")
-        intro.setWordWrap(True)
-        intro.setStyleSheet(f"color: {DIM};")
-        lay.addWidget(intro)
-        for step, title, shows, golden, done in PHASE2_STEPS:
-            card = QFrame()
-            card.setStyleSheet(f"QFrame {{ background: #202020; border: 1px solid {BORDER}; border-radius: 6px; }}"
-                               f"QLabel {{ border: none; background: transparent; }}")
-            c = QGridLayout(card)
-            c.setContentsMargins(12, 10, 12, 10)
-            head = QLabel(f"Step {step} · {title}")
-            head.setFont(QFont("Arial", 11, QFont.Bold))
-            chip = QLabel("DONE" if done else "NOT BUILT")
-            chip.setStyleSheet(self._chip_style(done))
-            body = QLabel(shows)
-            body.setWordWrap(True)
-            test = QLabel(f"Golden test: {golden}")
-            test.setWordWrap(True)
-            test.setStyleSheet(f"color: {DIM};")
-            c.addWidget(head, 0, 0)
-            c.addWidget(chip, 0, 1, alignment=Qt.AlignRight)
-            c.addWidget(body, 1, 0, 1, 2)
-            c.addWidget(test, 2, 0, 1, 2)
-            lay.addWidget(card)
-        lay.addStretch()
-        return _scroll_page(inner)
-
     # --- data -------------------------------------------------------------------
 
     def _refresh_chips(self):
@@ -530,12 +493,46 @@ class RaceAnalysisWindow(QMainWindow):
         except Exception as e:   # the other tabs still work; this one says why it cannot
             self.pace = None
             self.pace_tab.show_error(f"{type(e).__name__}: {e}")
+        missing = ValueError("the pace classification is missing (see the Pace tab)")
+        stops = degradation = dirty_air = undercuts = None
         try:
             if self.pace is None:
-                raise ValueError("the pace classification is missing (see the Pace tab)")
-            self.stops_tab.set_race(race_stops(self.pace.laps))
+                raise missing
+            stops = race_stops(self.pace.laps)
+            self.stops_tab.set_race(stops)
         except Exception as e:
             self.stops_tab.show_error(f"{type(e).__name__}: {e}")
+        try:
+            if self.pace is None:
+                raise missing
+            degradation = race_degradation(self.pace.laps)
+            self.degradation_tab.set_race(degradation)
+        except Exception as e:
+            self.degradation_tab.show_error(f"{type(e).__name__}: {e}")
+        try:
+            if self.pace is None:
+                raise missing
+            dirty_air = race_dirty_air(self.pace.laps)
+            self.dirty_air_tab.set_race(dirty_air)
+        except Exception as e:
+            self.dirty_air_tab.show_error(f"{type(e).__name__}: {e}")
+        try:
+            if self.pace is None:
+                raise missing
+            undercuts = race_undercuts(self.pace.laps)
+            self.undercuts_tab.set_race(undercuts, self.pace.laps)
+        except Exception as e:
+            self.undercuts_tab.show_error(f"{type(e).__name__}: {e}")
+        try:                     # the report reuses the steps' results: nothing is computed twice
+            if any(part is None for part in (self.pace, stops, degradation, dirty_air, undercuts)):
+                raise ValueError("a Phase 2 step could not run (its tab says why)")
+            self.report = RaceReport(season=self.year, round_number=self.round_number, event_name=self.event_name,
+                                     pace=self.pace, stops=stops, degradation=degradation, dirty_air=dirty_air,
+                                     undercuts=undercuts)
+            self.report_tab.set_report(self.report)
+        except Exception as e:
+            self.report = None
+            self.report_tab.show_error(f"{type(e).__name__}: {e}")
         self._load_laps_table()
         self.stack.setCurrentIndex(1)
 

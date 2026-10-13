@@ -1,0 +1,130 @@
+{
+  "season": 2024,
+  "round": 13,
+  "session": "R",
+  "event_name": "Hungarian Grand Prix",
+  "location": "Budapest",
+  "country": "Hungary",
+  "event_date": "2024-07-21 00:00:00",
+  "total_laps": 70,
+  "session_start_sec": 3304.938,
+  "driver_count": 20,
+  "telemetry": false,
+  "ingested_at_utc": "2026-10-11T10:54:54+00:00",
+  "fastf1_version": "3.8.3",
+  "warnings": [],
+  "fastf1_warnings": [],
+  "tables": {
+    "laps": {
+      "rows": 1355,
+      "bytes": 99992,
+      "columns": [
+        "Time",
+        "Driver",
+        "DriverNumber",
+        "LapTime",
+        "LapNumber",
+        "Stint",
+        "PitOutTime",
+        "PitInTime",
+        "Sector1Time",
+        "Sector2Time",
+        "Sector3Time",
+        "Sector1SessionTime",
+        "Sector2SessionTime",
+        "Sector3SessionTime",
+        "SpeedI1",
+        "SpeedI2",
+        "SpeedFL",
+        "SpeedST",
+        "IsPersonalBest",
+        "Compound",
+        "TyreLife",
+        "FreshTyre",
+        "Team",
+        "LapStartTime",
+        "LapStartDate",
+        "TrackStatus",
+        "Position",
+        "Deleted",
+        "DeletedReason",
+        "FastF1Generated",
+        "IsAccurate"
+      ]
+    },
+    "weather": {
+      "rows": 155,
+      "bytes": 8201,
+      "columns": [
+        "Time",
+        "AirTemp",
+        "Humidity",
+        "Pressure",
+        "Rainfall",
+        "TrackTemp",
+        "WindDirection",
+        "WindSpeed"
+      ]
+    },
+    "track_status": {
+      "rows": 3,
+      "bytes": 2742,
+      "columns": [
+        "Time",
+        "Status",
+        "Message"
+      ]
+    },
+    "race_control": {
+      "rows": 75,
+      "bytes": 7882,
+      "columns": [
+        "Time",
+        "Category",
+        "Message",
+        "Status",
+        "Flag",
+        "Scope",
+        "Sector",
+        "RacingNumber",
+        "Lap"
+      ]
+    },
+    "results": {
+      "rows": 20,
+      "bytes": 16162,
+      "columns": [
+        "DriverNumber",
+        "BroadcastName",
+        "Abbreviation",
+        "DriverId",
+        "TeamName",
+        "TeamColor",
+        "TeamId",
+        "FirstName",
+        "LastName",
+        "FullName",
+        "HeadshotUrl",
+        "CountryCode",
+        "Position",
+        "ClassifiedPosition",
+        "GridPosition",
+        "Q1",
+        "Q2",
+        "Q3",
+        "Time",
+        "Status",
+        "Points",
+        "Laps"
+      ]
+    },
+    "session_status": {
+      "rows": 5,
+      "bytes": 2287,
+      "columns": [
+        "Time",
+        "Status"
+      ]
+    }
+  }
+}

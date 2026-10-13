@@ -49,23 +49,28 @@ resumes where it stopped and writes a data-quality report per race:
 python -m src.pipeline.backfill --season 2023 2024 2025
 ```
 
-### 3. Analytics, step by step
+### 3. Analytics: what 70 races say
 
-The analytics are being rebuilt one step at a time. Each step starts from a written design and a
-predicted number, and ends with golden tests on real races.
+The analytics were rebuilt from scratch in six steps. Each step started from a written design and
+a predicted number, and ended with golden tests on real races. Every number comes with its sample
+size, its uncertainty and a ledger of what was left out, and why.
 
-- **Done: lap selection and neutralisations.** Every lap gets one status: a pace lap, or the
-  first reason it is not (lap 1, safety car, pit lap, outlier...). A ledger counts every exclusion.
-  Safety car, VSC and red-flag periods come from the official track status, counted in the
-  leader's laps; they match Race Control's own log.
-- **Next:** pit-stop loss, fuel-corrected tyre degradation, dirty air, measured undercuts.
+| Step | Measures | Result, 2023-2025 |
+|---|---|---|
+| 1. Lap selection | Which laps show true pace; safety car, VSC and red-flag periods from the official feed | 65,698 pace laps of 77,713; periods match Race Control's log |
+| 2. Pit stops | Time lost to a stop, per circuit and under neutralisations | Green stop 22.5 s (median), from 18.1 s (Spa) to 29.5 s (Singapore) |
+| 3. Tyre wear | Degradation per compound, corrected for fuel burning off | Soft +0.064, medium +0.049, hard +0.044 s per lap of tyre age |
+| 4. Dirty air | The cost of following another car | +0.33 ± 0.03 s per lap within 1.5 s; +0.78 s within 0.5 s |
+| 5. Undercuts | Real attempts: outcome, and where the time came from | 148 attempts, 45 % worked (95 % CI 37-53 %); 76 % from less than 1 s behind |
+| 6. Race report | Every number of every race, checked against ranges written down before measuring | 686 numbers checked, 0 unexplained |
 
 ### 4. The Analyze window
 
 `python main.py` → pick a race → **Analyze**. Without running the replay, it shows the result,
-the tyre strategies driven, the data quality and a **Pace** tab: lap-time charts per driver,
-raw pace by compound, driver pace on each compound and the exclusion ledger. If a race is not in
-the lake yet, the window builds it first.
+the race report (every number with its sample size, uncertainty and sanity check), the tyre
+strategies, a tab per analysis (Pace, Stops, Degradation, Dirty air, Undercuts) with hover
+tooltips on every chart, a lap-by-lap browser and the data quality. If a race is not in the lake
+yet, the window builds it first.
 
 ## Roadmap
 
@@ -73,7 +78,7 @@ the lake yet, the window builds it first.
 |---|---|---|
 | 0. Pipeline | Bronze / Silver / Gold, data contracts, tests | Done |
 | 1. Backfill | 2023-2025, a quality report per race | Done |
-| 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | In progress (step 1 done) |
+| 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | Done |
 | 3. Pace model | A ladder of models, each beating the last on races it has never seen: persistence → linear decomposition → state-space tyre model → gradient boosting | Planned |
 | 4. Race simulator | Replay the strategies actually driven, then Monte Carlo over safety-car timing and pace noise for "what if" questions | Planned |
 | 5. Telemetry | Corner-by-corner driver comparison; minimum-speed fade as an early sign of tyre wear | Planned |
@@ -98,7 +103,8 @@ Build races into the lake:
 ```bash
 python -m src.pipeline.runner --year 2024 --round 12 --no-telemetry   # one race, laps only
 python -m src.pipeline.backfill --season 2024                         # a whole season
-python -m src.analytics.laps --season 2024                            # pace laps for every race
+python -m src.analytics.report --season 2023 2024 2025               # every Phase 2 number, checked
+python -m src.gui.race_analysis_window 2024 23                        # the Analyze window on one race
 ```
 
 The first download of a race takes a while; FastF1 caches it in `.fastf1-cache/` and the replay
@@ -151,7 +157,8 @@ stream. See [docs/PitWallWindow.md](./docs/PitWallWindow.md),
 main.py                  entry point: session picker, replay or analyze
 src/pipeline/            the data lake: extractor (Bronze), cleaner (Silver), feature store (Gold),
                          contracts, backfill, quality reports
-src/analytics/           race overview, lap selection (laps.py), neutralised periods
+src/analytics/           race overview; Phase 2: lap selection, neutralised periods, pit stops,
+                         tyre wear, dirty air, undercuts, race report
 src/gui/                 session picker, Analyze window and its charts, insights menu
 src/interfaces/          race and qualifying replay (Arcade)
 src/insights/            live telemetry windows

@@ -86,9 +86,9 @@ def _add_race_gaps(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["_pos", "_ahead_end", "_leader_end"])
 
 
-def _add_track_gaps(df: pd.DataFrame) -> pd.DataFrame:
+def car_ahead_on_track(laps: pd.DataFrame) -> pd.DataFrame:
     """
-    Gap to the car physically ahead ON THE ROAD, which is what causes dirty air.
+    The car physically ahead ON THE ROAD when each lap ends, which is what causes dirty air.
 
     This differs from gap_ahead_sec when lapped cars are involved: the car in
     front of you on track may be a lap down and nowhere near you in the race.
@@ -97,14 +97,23 @@ def _add_track_gaps(df: pd.DataFrame) -> pd.DataFrame:
     For each crossing, the latest earlier crossing by a DIFFERENT car is the car
     ahead on the road. Crossings made in the pit lane (in-laps) are left out,
     because a car in the pit lane does not disturb the air on track.
-    """
-    on_track = (df["lap_end_sec"].notna() & ~df["is_in_lap"]).to_numpy()
-    order = np.argsort(df.loc[on_track, "lap_end_sec"].to_numpy(dtype=float), kind="stable")
-    crossings = df.loc[on_track, "lap_end_sec"].to_numpy(dtype=float)[order]
-    crossing_driver = df.loc[on_track, "driver_code"].to_numpy(dtype=object)[order]
 
-    t = df["lap_end_sec"].to_numpy(dtype=float)
-    driver = df["driver_code"].to_numpy(dtype=object)
+    Needs driver_code, lap_number, lap_end_sec, is_in_lap. Returns, on the same index:
+      gap_sec       this crossing minus the car ahead's crossing (s, rounded to the ms)
+      car_ahead     that car's driver code
+      car_ahead_lap the lap that car had just completed: equal to lap_number when it is on the
+                    same lap, lower when it is a lap or more down, higher when it is a lap or more up
+    All null when the lap has no end time, ends in the pit lane, or nobody crossed before it.
+    The phase 2 dirty-air analysis (src/analytics/dirty_air.py) uses this same function.
+    """
+    on_track = (laps["lap_end_sec"].notna() & ~laps["is_in_lap"]).to_numpy()
+    order = np.argsort(laps.loc[on_track, "lap_end_sec"].to_numpy(dtype=float), kind="stable")
+    crossings = laps.loc[on_track, "lap_end_sec"].to_numpy(dtype=float)[order]
+    crossing_driver = laps.loc[on_track, "driver_code"].to_numpy(dtype=object)[order]
+    crossing_lap = laps.loc[on_track, "lap_number"].to_numpy(dtype=float)[order]
+
+    t = laps["lap_end_sec"].to_numpy(dtype=float)
+    driver = laps["driver_code"].to_numpy(dtype=object)
     prev_idx = np.searchsorted(crossings, t, side="left") - 1
 
     # Step back past the car's own earlier crossings (only happens when it is alone on track).
@@ -114,10 +123,20 @@ def _add_track_gaps(df: pd.DataFrame) -> pd.DataFrame:
             break
         prev_idx[own] -= 1
 
-    gap = np.full(len(df), np.nan)
     ok = on_track & (prev_idx >= 0)
+    gap = np.full(len(laps), np.nan)
+    ahead = np.full(len(laps), None, dtype=object)
+    ahead_lap = np.full(len(laps), np.nan)
     gap[ok] = t[ok] - crossings[prev_idx[ok]]
-    df["gap_on_track_end_sec"] = np.round(gap, 3)
+    ahead[ok] = crossing_driver[prev_idx[ok]]
+    ahead_lap[ok] = crossing_lap[prev_idx[ok]]
+    return pd.DataFrame({"gap_sec": np.round(gap, 3), "car_ahead": ahead, "car_ahead_lap": ahead_lap},
+                        index=laps.index)
+
+
+def _add_track_gaps(df: pd.DataFrame) -> pd.DataFrame:
+    """Gap to the car ahead on the road at the end and at the start of each lap, and the dirty-air flag."""
+    df["gap_on_track_end_sec"] = car_ahead_on_track(df)["gap_sec"]
 
     # The gap at the start of lap N is the gap at the end of lap N-1.
     prev = df.groupby("driver_code")[["gap_on_track_end_sec", "lap_number"]].shift(1)

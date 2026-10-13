@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from src.pipeline.cleaner import clean_laps
-from src.pipeline.feature_store import (DIRTY_AIR_THRESHOLD_SEC, FUEL_END_KG, FUEL_START_KG,
+from src.pipeline.feature_store import (DIRTY_AIR_THRESHOLD_SEC, FUEL_END_KG, FUEL_START_KG, car_ahead_on_track,
                                         build_lap_features)
 from tests.helpers import make_bronze_laps
 
@@ -68,6 +68,17 @@ def test_on_track_gap_sees_a_lapped_car_that_the_race_gap_misses():
     # AAA ends lap 3 at t=270; the previous crossing by anyone is CCC at t=269.
     assert g.loc[("AAA", 3), "gap_on_track_end_sec"] == pytest.approx(1.0)
     assert pd.isna(g.loc[("AAA", 3), "gap_ahead_sec"])          # in the race, nobody is ahead of P1
+
+
+def test_car_ahead_on_track_names_the_car_and_the_lap_it_is_on():
+    rows = (stint("AAA", [90, 90, 90], position=1.0)
+            + stint("CCC", [134.5, 134.5], position=3.0))       # CCC crosses at 134.5 and 269.0
+    silver, _ = clean_laps(make_bronze_laps(rows), pd.DataFrame(), 2024, 1, "R")
+    ahead = car_ahead_on_track(silver).join(silver[["driver_code", "lap_number"]]).set_index(
+        ["driver_code", "lap_number"])
+    assert ahead.loc[("AAA", 3)].tolist() == [pytest.approx(1.0), "CCC", 2.0]   # 270 - 269.0, CCC on its lap 2
+    assert ahead.loc[("CCC", 2)].tolist() == [pytest.approx(89.0), "AAA", 2.0]  # 269.0 - 180, AAA on its lap 2
+    assert ahead.loc[("AAA", 1)].isna().all()                   # nobody crossed before
 
 
 def test_dirty_air_uses_the_average_of_start_and_end_gap():

@@ -15,9 +15,9 @@ down. No model and no estimate, so nothing here can be "wrong on purpose":
                   defined in src/pipeline/quality.py, shared with the backfill report
 
 Everything that has to be estimated (pace, pit loss, fuel-corrected degradation, dirty air,
-undercuts) is Phase 2, step by step, each with its own golden test. The window shows those as
-placeholders rather than borrowing the old engine's numbers (src/analytics/race_engine.py,
-known wrong in every output).
+undercuts) is Phase 2, step by step, each with its own golden test: each has its own tab, and the
+race report (src/analytics/report.py) puts them on one page. The old engine that guessed them
+(race_engine.py, wrong in every output) was deleted in step 6.
 
 The replay is not needed for any of this: everything is read from the lake.
 """

@@ -13,7 +13,7 @@ not merely the right type?
 import pandas as pd
 import pytest
 
-from src.analytics.race_engine import RaceAnalyticsEngine
+from src.analytics.report import UNEXPLAINED, load_race_report, sanity_checks
 from src.pipeline import contracts, lake
 from src.pipeline.cleaner import build_silver
 from src.pipeline.feature_store import build_gold
@@ -150,14 +150,13 @@ def test_silver_and_gold_never_import_fastf1(golden_lake, monkeypatch):
     run(golden_lake, BRITISH)
 
 
-@pytest.mark.parametrize("race", [BRITISH, QATAR])
-def test_existing_analytics_engine_still_runs_on_new_gold(golden_lake, race):
-    """Compatibility: the Phase 2 engine reads the new Gold file without changes."""
-    _, _, gold_path = run(golden_lake, race)
-    report = RaceAnalyticsEngine().analyze(gold_path)
-    assert report.year == 2024 and report.round_number == race[1]
-    assert len(report.driver_clean_pace) >= 15      # drivers who retired on lap 1 have no clean laps
-    assert len(report.stint_summaries) > 0
+@pytest.mark.parametrize("race, event", [(BRITISH, "British Grand Prix"), (QATAR, "Qatar Grand Prix")])
+def test_race_report_builds_on_a_freshly_built_lake(golden_lake, race, event):
+    """Bronze -> Silver here, then the whole of Phase 2 (steps 1-5) reads it and checks its own numbers."""
+    run(golden_lake, race)
+    report = load_race_report(*race, root=golden_lake)
+    assert (report.season, report.round_number, report.event_name) == (*race, event)
+    assert not (sanity_checks(report)["status"] == UNEXPLAINED).any()
 
 
 def test_missing_bronze_gives_a_clear_error(tmp_path):
