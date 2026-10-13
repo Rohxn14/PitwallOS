@@ -57,6 +57,11 @@ def _pit_kind_only_on_in_laps(df: pd.DataFrame) -> bool:
     return bool((has_kind == df["is_in_lap"]).all() and agrees.all())
 
 
+def _pit_stop_times_only_on_in_laps(df: pd.DataFrame) -> bool:
+    timed = df["pit_stop_time_sec"].notna() | df["pit_lane_time_sec"].notna()
+    return not bool((timed & ~df["is_in_lap"]).any())
+
+
 _SHARED_FRAME_CHECKS = [
     pa.Check(_clean_laps_are_plausible, error=f"clean lap time outside {CLEAN_LAP_MIN_SEC}-{CLEAN_LAP_MAX_SEC}s"),
     pa.Check(_clean_excludes_pit_and_lap1, error="a lap is flagged clean but is a pit lap, lap 1 or not green"),
@@ -82,12 +87,15 @@ SILVER_LAPS = pa.DataFrameSchema(
         "lap_end_sec": pa.Column(float, pa.Check.ge(0), nullable=True),
         "track_temp_c": pa.Column(float, pa.Check.in_range(-10, 80), nullable=True),
         "pit_kind": pa.Column(nullable=True, checks=pa.Check.isin(PIT_KINDS)),
+        "pit_stop_time_sec": pa.Column(float, pa.Check.ge(0), nullable=True),
+        "pit_lane_time_sec": pa.Column(float, pa.Check.gt(0), nullable=True),
         **_FLAG_COLUMNS,
     },
     checks=[
         *_SHARED_FRAME_CHECKS,
         pa.Check(_pit_kind_only_on_in_laps,
                  error="pit_kind must be set on exactly the in-laps and agree with is_tyre_change"),
+        pa.Check(_pit_stop_times_only_on_in_laps, error="F1's pit-stop times on a lap that is not an in-lap"),
         pa.Check(lambda df: bool((df["lap_end_sec"].isna() | df["lap_start_sec"].isna()
                                   | (df["lap_end_sec"] > df["lap_start_sec"])).all()),
                  error="a lap ends before it starts"),

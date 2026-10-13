@@ -1,11 +1,12 @@
 """
 Undercut chart (src/gui/undercuts_charts.py) — Phase 2 step 5
 
-`draw_attempts`: one row per undercut attempt of the race. Hollow dot: B's gap to the car ahead at
-the end of the lap before B's in-lap; filled dot: the gap at the end of the car ahead's out-lap, once
-both are on new tyres; an arrow between them. Left of the zero line, B is ahead: the undercut worked.
-One series, so one colour; the outcome is said in words at the end of each row, never by colour
-alone. Plain matplotlib like pace_charts.py, so the tests render it off-screen.
+`draw_attempts`: one row per undercut attempt of the race. Hollow dot: the gap of the driver who
+stopped first to the car ahead, at the end of the lap before its in-lap; filled dot: the gap at the
+end of the car ahead's out-lap, once both are on new tyres; an arrow between them. Left of the zero
+line, the driver is ahead: the undercut worked. One series, so one colour; the outcome is said in
+words at the end of each row, never by colour alone. Plain matplotlib like pace_charts.py, so the
+tests render it off-screen.
 """
 
 from __future__ import annotations
@@ -30,13 +31,32 @@ def is_yes(value) -> bool:
     return not pd.isna(value) and bool(value)
 
 
+def gap_words(sec) -> str:
+    """A gap at the line (this car's crossing minus the other's) in words: '2.051 behind', '3.377 ahead'."""
+    if sec is None or pd.isna(sec):
+        return "—"
+    if sec == 0:
+        return "level"
+    return f"{abs(sec):.3f} {'behind' if sec > 0 else 'ahead'}"
+
+
+def stop_words(pit_lane, stationary) -> str:
+    """'21.283 s in the pit lane, 2.4 s stationary' (stationary left out where F1 published none)."""
+    lane = "pit-lane time unknown" if pd.isna(pit_lane) else f"{pit_lane:.3f} s in the pit lane"
+    return lane if pd.isna(stationary) else f"{lane}, {stationary:.1f} s stationary"
+
+
 def attempt_tooltip(row: dict) -> str:
-    lines = [f"{row['driver_code']} on {row['car_ahead']}" + (" (team-mates)" if is_yes(row["teammates"]) else ""),
-             f"{row['driver_code']} stopped on lap {int(row['in_lap'])} ({compound_name(row['compound_before'])} → "
-             f"{compound_name(row['compound_after'])}), {row['car_ahead']} on lap {int(row['car_ahead_in_lap'])}",
-             f"gap {row['gap_before_sec']:+.3f} s → {row['gap_after_sec']:+.3f} s: gained {row['gain_sec']:+.3f} s",
+    b, a = row["driver_code"], row["car_ahead"]
+    lines = [f"{b} on {a}" + (" (team-mates)" if is_yes(row["teammates"]) else ""),
+             f"{b} stopped on lap {int(row['in_lap'])} ({compound_name(row['compound_before'])} → "
+             f"{compound_name(row['compound_after'])}), {a} on lap {int(row['car_ahead_in_lap'])}",
+             f"{b} was {gap_words(row['gap_before_sec'])}, then {gap_words(row['gap_after_sec'])}: "
+             f"gained {row['gain_sec']:+.3f} s",
              f"  stop (pit lane) {row['stop_gain_sec']:+.3f} · track around the stops {row['track_gain_sec']:+.3f} · "
-             f"laps between {row['between_gain_sec']:+.3f}"]
+             f"laps between {row['between_gain_sec']:+.3f}",
+             f"  {b}: {stop_words(row.get('pit_lane_sec'), row.get('stationary_sec'))}",
+             f"  {a}: {stop_words(row.get('car_ahead_pit_lane_sec'), row.get('car_ahead_stationary_sec'))}"]
     return "\n".join(lines)
 
 
@@ -66,8 +86,8 @@ def draw_attempts(fig: Figure, result: RaceUndercuts) -> List[HoverPoints]:
         xs += [before, after]
         yy += [y, y]
         tip = attempt_tooltip(r)
-        texts += [f"before {r['driver_code']}'s stop: {before:+.3f} s behind\n" + tip,
-                  f"after {r['car_ahead']}'s stop: {after:+.3f} s ({'ahead' if after < 0 else 'behind'})\n" + tip]
+        texts += [f"before {r['driver_code']}'s stop: {gap_words(before)}\n" + tip,
+                  f"after {r['car_ahead']}'s stop: {gap_words(after)}\n" + tip]
     ax.set_yticks(ys, [f"{r['driver_code']} on {r['car_ahead']}\nlaps {int(r['in_lap'])} / {int(r['car_ahead_in_lap'])}"
                        for r in rows])
     ax.tick_params(axis="y", length=0, labelcolor=INK_2)
@@ -78,10 +98,10 @@ def draw_attempts(fig: Figure, result: RaceUndercuts) -> List[HoverPoints]:
                   color=MUTED, fontsize=8.5)
     s = result.summary
     figure_title(fig, f"Undercut attempts · {s['worked']} of {s['attempts']} worked")
-    ax.set_title("Hollow: the gap at the end of the lap before B's in-lap. Filled: at the end of the car ahead's "
-                 "out-lap, once both are on new tyres.", loc="left", color=MUTED, fontsize=8, pad=8)
+    ax.set_title("Hollow: the gap at the end of the lap before the driver's in-lap. Filled: at the end of the car "
+                 "ahead's out-lap, once both are on new tyres.", loc="left", color=MUTED, fontsize=8, pad=8)
     handles = [Line2D([], [], linestyle="none", marker="o", markersize=7, markerfacecolor=SURFACE,
-                      markeredgecolor=DOT, markeredgewidth=1.6, label="before B's stop"),
+                      markeredgecolor=DOT, markeredgewidth=1.6, label="before the driver's stop"),
                Line2D([], [], linestyle="none", marker="o", markersize=7, markerfacecolor=DOT,
                       markeredgecolor=SURFACE, label="after both stops")]
     fig.legend(handles=handles, loc="outside lower center", ncols=2, frameon=False, fontsize=8, labelcolor=INK_2)

@@ -194,3 +194,29 @@ def test_qatar_gp_safety_car_through_the_pit_lane_is_not_a_stop(golden_lake):
     assert ["HAM", 47] in pass_throughs          # drive-through for pit-lane speeding
     assert stops(silver, "ended")[["driver_code", "lap_number"]].values.tolist() == [["STR", 8]]
     assert gold.loc[gold["driver_code"] == "VER", "stint_number"].max() == 2.0
+
+
+# --- F1's own pit-stop record (published since 2024 round 19) -------------------------------------
+
+def test_qatar_gp_f1_pit_stop_times(golden_lake):
+    silver, _, _ = run(golden_lake, QATAR)
+    assert lake.read_manifest(*QATAR, root=golden_lake)["pit_stops"] == "published"
+    timed = silver[silver["pit_stop_time_sec"].notna()].set_index(["driver_code", "lap_number"])
+    # Every tyre change has a time, plus NOR's 10 s stop/go (Race Control): 26 + 1.
+    assert len(timed) == 27 and silver.loc[silver["is_tyre_change"], "pit_stop_time_sec"].notna().all()
+    assert timed.loc[("NOR", 45), "pit_kind"] == "pass_through" and timed.loc[("NOR", 45), "pit_stop_time_sec"] == 10.8
+    assert timed.loc[("VER", 35), "pit_stop_time_sec"] == 2.5
+    # HAM's drive-through (lap 47) never stopped: no stationary time.
+    ham_47 = silver[(silver["driver_code"] == "HAM") & (silver["lap_number"] == 47)].iloc[0]
+    assert ham_47["pit_kind"] == "pass_through" and pd.isna(ham_47["pit_stop_time_sec"])
+    # F1's pit-lane time and the timing's (pit entry to exit) are two measurements of the same thing.
+    by = silver.set_index(["driver_code", "lap_number"])
+    timing = [by.loc[(d, n + 1), "pit_out_sec"] - by.loc[(d, n), "pit_in_sec"] for d, n in timed.index]
+    differences = (timed["pit_lane_time_sec"] - pd.Series(timing, index=timed.index)).abs()
+    assert differences.max() < 0.75 and differences.median() < 0.1
+
+
+def test_british_gp_has_no_f1_pit_stop_record(golden_lake):
+    silver, _, _ = run(golden_lake, BRITISH)
+    assert lake.read_manifest(*BRITISH, root=golden_lake)["pit_stops"] == "not published"
+    assert silver["pit_stop_time_sec"].isna().all() and silver["pit_lane_time_sec"].isna().all()

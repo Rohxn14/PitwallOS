@@ -160,7 +160,58 @@ def test_duplicates_and_unidentifiable_rows_are_dropped_and_counted():
     ])
     assert report == {"input_rows": 3, "dropped_null_key": 1, "dropped_duplicates": 1,
                       "output_rows": 1, "clean_laps": 1,
+                      "pit_stops_published": 0, "pit_stops_matched": 0, "dropped_pit_stop_duplicates": 0,
+                      "dropped_pit_stops_unmatched": 0, "pit_stop_values_not_numbers": 0,
                       "pit_tyre_change": 0, "pit_pass_through": 0, "pit_ended": 0, "pit_unknown": 0}
+
+
+# --- F1's own pit-stop record --------------------------------------------------------
+
+STOP_LAPS = [
+    dict(driver="AAA", lap=2, start=100, end=190, tyre_life=2.0),
+    dict(driver="AAA", lap=3, start=190, end=285, pit_in=283, tyre_life=3.0),
+    dict(driver="AAA", lap=4, start=285, end=395, pit_out=305, compound="HARD", tyre_life=1.0),
+    dict(driver="AAA", lap=5, start=395, end=485, compound="HARD", tyre_life=2.0),
+]
+
+
+def f1_record(*stops):
+    """Bronze pit_stops rows, as the feed delivers them (text): (number, lap, stationary, pit lane)."""
+    return pd.DataFrame([{"RacingNumber": n, "Lap": lap, "PitStopTime": still, "PitLaneTime": lane,
+                          "Timestamp": "2024-01-01T14:30:00Z"} for n, lap, still, lane in stops], dtype="string")
+
+
+def test_f1_pit_stop_times_land_on_the_in_lap_only():
+    laps, report = clean_laps(make_bronze_laps(STOP_LAPS), NO_WEATHER, 2024, 1, "R",
+                              pit_stops=f1_record(("1", "3", "2.4", "21.283")))
+    laps = laps.set_index("lap_number")
+    assert laps.loc[3, "pit_stop_time_sec"] == 2.4 and laps.loc[3, "pit_lane_time_sec"] == 21.283
+    assert laps.drop(index=3)[["pit_stop_time_sec", "pit_lane_time_sec"]].isna().all().all()
+    assert report["pit_stops_published"] == report["pit_stops_matched"] == 1
+
+
+def test_no_f1_record_leaves_the_times_unknown_not_zero():
+    laps, report = clean_laps(make_bronze_laps(STOP_LAPS), NO_WEATHER, 2024, 1, "R")
+    assert laps["pit_stop_time_sec"].isna().all() and laps["pit_lane_time_sec"].isna().all()
+    assert report["pit_stops_published"] == 0
+
+
+def test_f1_records_that_do_not_fit_are_counted_never_silently_dropped():
+    record = f1_record(("1", "3", "2.4", "21.283"), ("1", "3", "2.4", "21.283"),   # the same stop twice
+                       ("1", "4", "2.6", "22.000"),                                 # lap 4 is not an in-lap
+                       ("2", "3", "2.5", "21.900"))                                 # no such driver
+    laps, report = clean_laps(make_bronze_laps(STOP_LAPS), NO_WEATHER, 2024, 1, "R", pit_stops=record)
+    assert report["pit_stops_published"] == 4 and report["dropped_pit_stop_duplicates"] == 1
+    assert report["pit_stops_matched"] == 1 and report["dropped_pit_stops_unmatched"] == 2
+    assert int(laps["pit_stop_time_sec"].notna().sum()) == 1
+
+
+def test_an_f1_value_that_is_not_a_number_stays_unknown_and_is_counted():
+    laps, report = clean_laps(make_bronze_laps(STOP_LAPS), NO_WEATHER, 2024, 1, "R",
+                              pit_stops=f1_record(("1", "3", "", "21.283")))
+    in_lap = laps.set_index("lap_number").loc[3]
+    assert pd.isna(in_lap["pit_stop_time_sec"]) and in_lap["pit_lane_time_sec"] == 21.283
+    assert report["pit_stop_values_not_numbers"] == 1
 
 
 def test_missing_required_column_raises_instead_of_filling_zero():

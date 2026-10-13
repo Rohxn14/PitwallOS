@@ -32,8 +32,9 @@ f1_cache/
 # Pre-refactor backups
 _backup/
 
-# Local project report and Word lock files (not for the repository)
+# Local project reports and Word lock files (not for the repository)
 PitwallOS_Project_Report.docx
+Claude outputs/
 ~$*
 
 # Claude Code project notes: local working notes, not for the repository

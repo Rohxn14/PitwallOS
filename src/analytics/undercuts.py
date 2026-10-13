@@ -30,6 +30,10 @@ The gain splits exactly into three parts (they add up to it):
 Lap by lap, an in-lap or out-lap mostly says where the pit box sits relative to the timing line (an
 out-lap "costs" ~14 s), so attempt_laps shows one attempt lap by lap for reading, not for the split.
 
+Each car's stop carries its pit-lane time and, where F1 published it (since 2024 round 19), the time
+it stood still in its box; RaceUndercuts.typical is the race's typical stop (stops.typical_stop), so a
+slow stop can be told from a slow lap.
+
 Every tyre change gets one status: ATTEMPT, or the first reason in LEDGER_ORDER that it is not one
 (first what B's stop was, then what A did). Only the car directly ahead counts: an undercut on a
 car two places up is not measured. Team-mates are kept and flagged.
@@ -43,7 +47,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -52,7 +56,7 @@ import pandas as pd
 from src.analytics.degradation import WET_COMPOUNDS
 from src.analytics.dirty_air import CLEAR_AIR_SEC
 from src.analytics.laps import classify_laps
-from src.analytics.stops import GREEN, RED_FLAG, stops
+from src.analytics.stops import GREEN, RED_FLAG, stops, typical_stop
 from src.pipeline import lake
 
 MAX_GAP_SEC = CLEAR_AIR_SEC      # 3 s: closer than this, B is held up by A (step 4), so stopping first is the way past
@@ -61,9 +65,9 @@ GAP_BANDS = (0.0, 1.0, 2.0, MAX_GAP_SEC)
 
 ATTEMPT = "attempt"
 RED_FLAG_CHANGE = "red-flag tyre change (free)"
-NOT_GREEN = "B's stop not green (SC, VSC, yellow, lap 1)"
+NOT_GREEN = "stop not green (SC, VSC, yellow, lap 1)"
 WET = "wet tyres (inters or wets)"
-LEADING = "B was leading"
+LEADING = "the driver was leading"
 NO_GAP = "no gap to the car ahead"
 TOO_FAR = f"car ahead {MAX_GAP_SEC:g} s or more away"
 A_FIRST = f"car ahead had stopped first (up to {MAX_RESPONSE_LAPS} laps before)"
@@ -78,8 +82,10 @@ LEDGER_ORDER = (RED_FLAG_CHANGE, NOT_GREEN, WET, LEADING, NO_GAP, TOO_FAR, A_FIR
 
 EVENT_COLUMNS = [
     "driver_code", "team", "in_lap", "condition", "compound_before", "compound_after", "tyre_age_before",
+    "pit_lane_sec", "stationary_sec",
     "position_before", "car_ahead", "teammates", "gap_before_sec", "car_ahead_in_lap", "lag",
     "car_ahead_condition", "car_ahead_compound_before", "car_ahead_compound_after", "car_ahead_tyre_age_before",
+    "car_ahead_pit_lane_sec", "car_ahead_stationary_sec",
     "gap_after_sec", "gain_sec", "stop_gain_sec", "between_gain_sec", "track_gain_sec", "worked", "status",
 ]
 
@@ -111,8 +117,7 @@ def undercut_events(classified: pd.DataFrame, stop_table: Optional[pd.DataFrame]
     by = classified.set_index(["driver_code", "lap_number"])
     if not by.index.is_unique:
         raise ValueError("Silver laps have more than one row for a driver and lap; cannot pair cars")
-    end, pos = by["lap_end_sec"], by["position"]
-    pit_in, pit_out, team = by["pit_in_sec"], by["pit_out_sec"], by["team"]
+    end, pos, team = by["lap_end_sec"], by["position"], by["team"]
     neutral = by["is_sc"].astype(bool) | by["is_vsc"].astype(bool) | by["is_red"].astype(bool)
     at_position = {}                              # (lap, position) -> driver, only where exactly one car has it
     placed = classified.dropna(subset=["position"])
@@ -131,7 +136,8 @@ def undercut_events(classified: pd.DataFrame, stop_table: Optional[pd.DataFrame]
         row = {c: np.nan for c in EVENT_COLUMNS}
         row.update(driver_code=b, team=s["team"], in_lap=n, condition=s["condition"],
                    compound_before=s["compound_before"], compound_after=s["compound_after"],
-                   tyre_age_before=s["tyre_age_before"], car_ahead=None, teammates=pd.NA, worked=pd.NA,
+                   tyre_age_before=s["tyre_age_before"], pit_lane_sec=s["pit_lane_sec"],
+                   stationary_sec=s["stationary_sec"], car_ahead=None, teammates=pd.NA, worked=pd.NA,
                    car_ahead_condition=None, car_ahead_compound_before=None, car_ahead_compound_after=None)
         rows.append(row)
         if s["condition"] == RED_FLAG:
@@ -177,7 +183,8 @@ def undercut_events(classified: pd.DataFrame, stop_table: Optional[pd.DataFrame]
         m = int(r["in_lap"])
         row.update(car_ahead_in_lap=m, lag=m - n, car_ahead_condition=r["condition"],
                    car_ahead_compound_before=r["compound_before"], car_ahead_compound_after=r["compound_after"],
-                   car_ahead_tyre_age_before=r["tyre_age_before"])
+                   car_ahead_tyre_age_before=r["tyre_age_before"], car_ahead_pit_lane_sec=r["pit_lane_sec"],
+                   car_ahead_stationary_sec=r["stationary_sec"])
         if m - n > MAX_RESPONSE_LAPS:
             row["status"] = A_LATE
             continue
@@ -195,8 +202,7 @@ def undercut_events(classified: pd.DataFrame, stop_table: Optional[pd.DataFrame]
             row["status"] = NO_GAP_AFTER
             continue
         gain = g0 - g1
-        stop_gain = ((float(pit_out.get((a, m + 1), np.nan)) - float(pit_in.get((a, m), np.nan)))
-                     - (float(pit_out.get((b, n + 1), np.nan)) - float(pit_in.get((b, n), np.nan))))
+        stop_gain = float(r["pit_lane_sec"]) - float(s["pit_lane_sec"])   # pit entry to exit, from step 2's stops
         between = gap(n + 1, b, a) - gap(m - 1, b, a) if m - n >= 3 else 0.0
         row.update(gap_after_sec=g1, gain_sec=gain, stop_gain_sec=stop_gain, between_gain_sec=between,
                    track_gain_sec=gain - stop_gain - between, worked=bool(g1 < 0), status=ATTEMPT)
@@ -266,14 +272,19 @@ class RaceUndercuts:
     attempts: pd.DataFrame      # the events that are attempts
     ledger: pd.DataFrame        # undercut_ledger
     summary: Dict[str, Any]     # attempt_summary of this race's attempts
+    typical: Dict[str, Any] = field(default_factory=dict)   # stops.typical_stop: the race's typical stop
 
 
-def race_undercuts(classified: pd.DataFrame) -> RaceUndercuts:
-    """Everything step 5 says about one race, from its classified laps (laps.classify_laps). Pure."""
-    events = undercut_events(classified)
+def race_undercuts(classified: pd.DataFrame, stop_table: Optional[pd.DataFrame] = None) -> RaceUndercuts:
+    """
+    Everything step 5 says about one race, from its classified laps (laps.classify_laps). Pure.
+    stop_table: step 2's stops for these laps, if already computed (default: computed here).
+    """
+    st = stops(classified) if stop_table is None else stop_table
+    events = undercut_events(classified, st)
     attempts = events[events["status"] == ATTEMPT].reset_index(drop=True)
     return RaceUndercuts(events=events, attempts=attempts, ledger=undercut_ledger(events),
-                         summary=attempt_summary(attempts))
+                         summary=attempt_summary(attempts), typical=typical_stop(st))
 
 
 def load_race_undercuts(year: int, round_number: int, session: str = "R",
@@ -334,8 +345,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     attempts = table[table["status"] == ATTEMPT]
     s = attempt_summary(attempts)
     if s["attempts"]:
-        print(f"\nUndercuts that worked (B ahead of A at the end of A's out-lap): {s['worked']} of {s['attempts']} = "
-              f"{100 * s['share']:.0f} % (95 % CI {100 * s['share_lo']:.0f}-{100 * s['share_hi']:.0f} %)")
+        print(f"\nUndercuts that worked (the driver ahead at the end of the car ahead's out-lap): {s['worked']} of "
+              f"{s['attempts']} = {100 * s['share']:.0f} % (95 % CI {100 * s['share_lo']:.0f}-{100 * s['share_hi']:.0f} %)")
         bands = pd.cut(attempts["gap_before_sec"], list(GAP_BANDS), right=False)
         print("  by gap before:")
         for band, group in attempts.groupby(bands, observed=True):

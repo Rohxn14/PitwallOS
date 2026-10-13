@@ -13,7 +13,7 @@ import pytest
 from src.analytics.laps import classify_laps, race_pace
 from src.analytics.stops import (
     DRIVER_REFERENCE, FIELD_REFERENCE, GREEN, LAP_1, RED_FLAG, SAFETY_CAR, main, pit_loss, race_stops, stop_counts,
-    stops,
+    stops, typical_stop,
 )
 from src.pipeline.cleaner import clean_laps
 from tests.helpers import make_bronze_laps, make_weather
@@ -95,6 +95,21 @@ def test_unknown_stays_unknown():
     assert pd.isna(alone["loss_sec"]) and "cars stayed out" in alone["loss_note"]
 
 
+def test_each_stop_carries_its_pit_lane_time_and_no_invented_stationary_time():
+    s = one(stops(race(["AAA", "BBB", "CCC", "DDD"], stop_lap={"AAA": 8})))
+    assert s["pit_lane_sec"] == pytest.approx(22.0)                   # in at 2 s before the line, out 20 s after it
+    assert pd.isna(s["stationary_sec"])                               # no F1 record for this race: unknown
+
+
+def test_the_typical_stop_is_the_median_green_stop():
+    table = pd.DataFrame({"condition": [GREEN, GREEN, GREEN, SAFETY_CAR],
+                          "pit_lane_sec": [21.0, 22.0, 30.0, 25.0], "stationary_sec": [2.4, 2.6, float("nan"), 9.0]})
+    t = typical_stop(table)
+    assert (t["pit_lane_sec"], t["pit_lane_n"]) == (22.0, 3)          # the safety-car stop left out
+    assert (t["stationary_sec"], t["stationary_n"]) == (2.5, 2)       # only stops with F1's figure
+    assert typical_stop(table.iloc[3:])["pit_lane_n"] == 0
+
+
 def test_circuit_loss_is_the_median_of_green_stops_only():
     table = pd.DataFrame({"condition": [GREEN, GREEN, GREEN, SAFETY_CAR, RED_FLAG],
                           "loss_sec": [20.0, 22.0, 30.0, 12.0, float("nan")]})
@@ -134,6 +149,17 @@ def test_qatar_stops(results):
     assert ver["in_lap"].tolist() == [35] and ver["condition"].tolist() == [SAFETY_CAR]
     assert pd.isna(ver["loss_sec"].iloc[0])                           # out-lap 36 has no time
     assert r.green_loss == pytest.approx(r.stops.loc[r.stops["condition"] == GREEN, "loss_sec"].median())
+
+
+def test_qatar_stop_times(results):
+    """F1's own stationary time where published (Qatar 2024 is), the pit-lane time from the timing."""
+    stops_ = results[QATAR].stops.set_index(["driver_code", "in_lap"])
+    assert stops_.loc[("VER", 35), "stationary_sec"] == 2.5
+    assert stops_.loc[("VER", 35), "pit_lane_sec"] == pytest.approx(28.317, abs=1e-3)
+    assert stops_["stationary_sec"].notna().all()                     # every tyre change of the race
+    assert results[QATAR].typical["stationary_n"] == int((results[QATAR].stops["condition"] == GREEN).sum())
+    assert results[BRITISH].stops["stationary_sec"].isna().all()      # not published before 2024 round 19
+    assert results[BRITISH].typical["stationary_n"] == 0 and results[BRITISH].typical["pit_lane_n"] == 45
 
 
 def test_command_line_writes_a_pit_loss_report(golden_lake, capsys):

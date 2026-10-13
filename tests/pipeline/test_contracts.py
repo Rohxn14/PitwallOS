@@ -49,6 +49,13 @@ def test_clean_flag_on_a_pit_lap_is_rejected():
         contracts.validate(laps, contracts.SILVER_LAPS, "Silver laps")
 
 
+def test_pit_stop_times_off_an_in_lap_are_rejected():
+    laps = silver_laps()
+    laps.loc[2, "pit_stop_time_sec"] = 2.4                # lap 3 is not an in-lap
+    with pytest.raises(contracts.ContractError, match="not an in-lap"):
+        contracts.validate(laps, contracts.SILVER_LAPS, "Silver laps")
+
+
 def test_all_failures_are_reported_together():
     laps = silver_laps()
     laps.loc[0, "compound"] = "BANANA"

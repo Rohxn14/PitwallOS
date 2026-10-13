@@ -6,6 +6,7 @@ Phase 1 backfill: many races into the lake with one command (src/pipeline/backfi
     python -m src.pipeline.backfill --season 2024 --rounds 12 23    # only these rounds
     python -m src.pipeline.backfill --season 2024 --rebuild         # redo Silver + Gold from Bronze (offline)
     python -m src.pipeline.backfill --season 2024 --telemetry       # also telemetry (~100 MB download per race)
+    python -m src.pipeline.backfill --season 2024 --pit-stops       # add F1's pit-stop record to older Bronze
 
 The same Bronze -> Silver -> Gold steps as runner.py, in a loop, with four properties that a
 single run does not need:
@@ -58,6 +59,7 @@ OK, FAILED = "ok", "failed"
 # Where a race's Bronze came from in this run.
 FROM_FASTF1 = "fastf1"      # extracted now (FastF1's cache if it had it, else downloaded)
 FROM_BRONZE = "bronze"      # Bronze already in the lake: Silver + Gold rebuilt from it, offline
+ADDED_PIT_STOPS = "bronze+stops"   # Bronze in the lake; F1's pit-stop record downloaded; Silver + Gold rebuilt
 ALREADY_BUILT = "existing"  # Gold already in the lake: nothing done
 
 REPORT_LEAD = ["season", "round", "event_name", "status", "stage", "error", "source", "seconds"]
@@ -94,14 +96,28 @@ def has_usable_bronze(year: int, round_number: int, telemetry: bool, root: str) 
     return not telemetry or lake.bronze_has_telemetry(year, round_number, SESSION, root)
 
 
+def needs_pit_stops(year: int, round_number: int, root: str) -> bool:
+    """Bronze is there, but was ingested before the extractor fetched F1's pit-stop record."""
+    return (lake.has_bronze(year, round_number, SESSION, root)
+            and "pit_stops" not in lake.read_manifest(year, round_number, SESSION, root))
+
+
 def extract_with_retry(year: int, round_number: int, *, root: str, telemetry: bool,
                        policy: RetryPolicy = RetryPolicy(), sleep: Callable[[float], None] = time.sleep,
                        say: Callable[[str], None] = console.print) -> Dict[str, Any]:
     """extractor.extract_session, retried according to `policy`. Raises the last error if it never succeeds."""
+    return with_retry(lambda: extractor.extract_session(year, round_number, SESSION, root, telemetry=telemetry),
+                      round_number, policy=policy, sleep=sleep, say=say)
+
+
+def with_retry(download: Callable[[], Dict[str, Any]], round_number: int, *, policy: RetryPolicy = RetryPolicy(),
+               sleep: Callable[[float], None] = time.sleep,
+               say: Callable[[str], None] = console.print) -> Dict[str, Any]:
+    """Run one download, retried according to `policy`. Raises the last error if it never succeeds."""
     tries = rate_limit_waits = 0
     while True:
         try:
-            return extractor.extract_session(year, round_number, SESSION, root, telemetry=telemetry)
+            return download()
         except Exception as err:
             if _is_rate_limit(err) and rate_limit_waits < policy.rate_limit_max_waits:
                 rate_limit_waits += 1
@@ -116,21 +132,27 @@ def extract_with_retry(year: int, round_number: int, *, root: str, telemetry: bo
 
 
 def build_race(year: int, round_number: int, *, root: str = lake.DEFAULT_LAKE_ROOT, telemetry: bool = False,
-               rebuild: bool = False, event_name: Optional[str] = None, policy: RetryPolicy = RetryPolicy(),
-               sleep: Callable[[float], None] = time.sleep) -> Dict[str, Any]:
+               rebuild: bool = False, pit_stops: bool = False, event_name: Optional[str] = None,
+               policy: RetryPolicy = RetryPolicy(), sleep: Callable[[float], None] = time.sleep) -> Dict[str, Any]:
     """
     Bring one race up to Gold, doing only the work that is missing. Never raises for a race
-    failure: the returned row says what happened.
+    failure: the returned row says what happened. pit_stops=True also adds F1's pit-stop record
+    to a Bronze ingested without it (the only download for that race) and rebuilds from it.
     """
     start = time.time()
     row: Dict[str, Any] = {"season": int(year), "round": int(round_number), "event_name": event_name,
                            "status": OK, "stage": "", "error": "", "source": ALREADY_BUILT}
 
-    if rebuild or not is_built(year, round_number, telemetry, root):
+    add_stops = pit_stops and needs_pit_stops(year, round_number, root)
+    if rebuild or add_stops or not is_built(year, round_number, telemetry, root):
         stage = "bronze"
         try:
             if has_usable_bronze(year, round_number, telemetry, root):
                 row["source"] = FROM_BRONZE
+                if add_stops:
+                    row["source"] = ADDED_PIT_STOPS
+                    with_retry(lambda: extractor.add_pit_stops(year, round_number, SESSION, root), round_number,
+                               policy=policy, sleep=sleep)
             else:
                 row["source"] = FROM_FASTF1
                 extract_with_retry(year, round_number, root=root, telemetry=telemetry, policy=policy, sleep=sleep)
@@ -192,23 +214,26 @@ def _describe(row: Dict[str, Any]) -> str:
     if row["status"] == FAILED:
         return f"[bold red]FAILED at {row['stage']}[/bold red]  {escape(str(row['error'])[:240])}"
     sc = row.get("sc_lap_numbers") or "-"
-    return (f"[green]ok[/green]  {row['source']:<8} {row['laps']:>5,} laps  clean {row['clean_pct']:>5.1f}%  "
-            f"stops {row['tyre_changes']:>3}  SC {escape(sc)}")
+    times = f"  stop times {row['pit_stop_times']:>2}" if row.get("pit_stop_times") else ""
+    return (f"[green]ok[/green]  {row['source']:<12} {row['laps']:>5,} laps  clean {row['clean_pct']:>5.1f}%  "
+            f"stops {row['tyre_changes']:>3}{times}  SC {escape(sc)}")
 
 
 def backfill(season: int, rounds: Optional[Sequence[int]] = None, *, root: str = lake.DEFAULT_LAKE_ROOT,
-             telemetry: bool = False, rebuild: bool = False, policy: RetryPolicy = RetryPolicy(),
-             sleep: Callable[[float], None] = time.sleep, now: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+             telemetry: bool = False, rebuild: bool = False, pit_stops: bool = False,
+             policy: RetryPolicy = RetryPolicy(), sleep: Callable[[float], None] = time.sleep,
+             now: Optional[pd.Timestamp] = None) -> pd.DataFrame:
     """Build every race of a season (or the given rounds). Returns this run's report rows."""
     races, not_yet = races_to_run(season, rounds, now)
     mode = "laps + telemetry" if telemetry else "laps only"
-    console.rule(f"[bold cyan]Backfill {season}[/bold cyan]: {len(races)} races, {mode}" + (", rebuild" if rebuild else ""))
+    extras = (", rebuild" if rebuild else "") + (", pit stops" if pit_stops else "")
+    console.rule(f"[bold cyan]Backfill {season}[/bold cyan]: {len(races)} races, {mode}{extras}")
     if not_yet:
         console.print(f"Not run yet, left out: {', '.join(r['event_name'] for r in not_yet)}")
 
     rows: List[Dict[str, Any]] = []
     for i, race in enumerate(races, 1):
-        row = build_race(season, race["round"], root=root, telemetry=telemetry, rebuild=rebuild,
+        row = build_race(season, race["round"], root=root, telemetry=telemetry, rebuild=rebuild, pit_stops=pit_stops,
                          event_name=race["event_name"], policy=policy, sleep=sleep)
         rows.append(row)
         save_report(season, rows, root)
@@ -254,6 +279,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--rounds", type=int, nargs="+", help="only these rounds (default: every race run so far)")
     parser.add_argument("--rebuild", action="store_true", help="rebuild Silver + Gold even where Gold exists")
     parser.add_argument("--telemetry", action="store_true", help="also ingest telemetry (default: laps only)")
+    parser.add_argument("--pit-stops", action="store_true",
+                        help="add F1's pit-stop record to Bronze ingested without it (one small download per race)")
     parser.add_argument("--lake", default=lake.DEFAULT_LAKE_ROOT, help="lake root folder (default: data)")
     parser.add_argument("--verbose", action="store_true", help="show FastF1's own progress messages")
     args = parser.parse_args(argv)
@@ -263,7 +290,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     failed = 0
     try:
         for season in args.season:
-            report = backfill(season, args.rounds, root=args.lake, telemetry=args.telemetry, rebuild=args.rebuild)
+            report = backfill(season, args.rounds, root=args.lake, telemetry=args.telemetry, rebuild=args.rebuild,
+                              pit_stops=args.pit_stops)
             failed += int((report["status"] == FAILED).sum()) if len(report) else 0
     except KeyboardInterrupt:
         console.print("[yellow]Interrupted. Finished races are saved; run the same command again to resume.[/yellow]")

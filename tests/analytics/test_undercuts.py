@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from src.analytics.laps import classify_laps, race_pace
+from src.analytics.stops import stops
 from src.analytics.undercuts import (
     A_FIRST, A_LATE, A_NEVER, A_NOT_GREEN, ATTEMPT, LEADING, NEUTRALISED, NO_GAP_AFTER, NOT_GREEN, RED_FLAG_CHANGE,
     SAME_LAP, TOO_FAR, WET, attempt_laps, main, race_undercuts, undercut_events, wilson,
@@ -80,6 +81,8 @@ def test_an_undercut_that_works_and_its_gain_split():
     assert e["gap_before_sec"] == pytest.approx(1.5) and e["gap_after_sec"] == pytest.approx(-1.0)
     assert bool(e["worked"]) and e["gain_sec"] == pytest.approx(2.5)
     assert e["stop_gain_sec"] == pytest.approx(0.5)                 # 20.5 s in the pit lane against 20.0
+    assert e["pit_lane_sec"] == pytest.approx(20.0) and e["car_ahead_pit_lane_sec"] == pytest.approx(20.5)
+    assert pd.isna(e["stationary_sec"]) and pd.isna(e["car_ahead_stationary_sec"])   # no F1 record: unknown
     assert e["between_gain_sec"] == 0.0                             # AAA stopped 2 laps later: no lap between
     assert e["track_gain_sec"] == pytest.approx(2.0)
 
@@ -165,11 +168,21 @@ def test_hungary_norris_undercuts_piastri_on_lap_45(hungary):
     assert e["gap_before_sec"] == pytest.approx(7021.103 - 7019.052)
     assert e["gap_after_sec"] == pytest.approx(7371.626 - 7375.003) and bool(e["worked"])
     # Pit lane: NOR 7105.665 -> 7126.944, PIA 7271.866 -> 7293.722
+    assert e["pit_lane_sec"] == pytest.approx(7126.944 - 7105.665)
+    assert e["car_ahead_pit_lane_sec"] == pytest.approx(7293.722 - 7271.866)
     assert e["stop_gain_sec"] == pytest.approx((7293.722 - 7271.866) - (7126.944 - 7105.665))
+    assert pd.isna(e["stationary_sec"]) and r.typical["stationary_n"] == 0   # F1 published none before round 19
     assert e["gain_sec"] == pytest.approx(5.428)
     assert e["stop_gain_sec"] + e["track_gain_sec"] + e["between_gain_sec"] == pytest.approx(e["gain_sec"])
     first = r.events.set_index(["driver_code", "in_lap"]).loc[("NOR", 17)]
     assert first["status"] == TOO_FAR and first["gap_before_sec"] == pytest.approx(3.502)   # PIA stopped on 18
+
+
+def test_a_stop_table_computed_once_can_be_shared(hungary):
+    classified, r = hungary
+    again = race_undercuts(classified, stops(classified))
+    pd.testing.assert_frame_equal(again.events, r.events)
+    assert again.typical["pit_lane_sec"] == r.typical["pit_lane_sec"] and r.typical["pit_lane_n"] > 0
 
 
 def test_hungary_timing_positions_agree(hungary):

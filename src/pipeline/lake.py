@@ -41,6 +41,7 @@ LAYERS = (BRONZE, SILVER, GOLD)
 MANIFEST_NAME = "_manifest.json"
 GOLD_TABLE = "lap_features"
 BRONZE_TELEMETRY_TABLES = ("car_telemetry", "pos_telemetry")
+BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
 REPORTS_DIR = "reports"
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
 # ("São Paulo" shows as "SÃ£o Paulo"). pandas reads it back with clean column names.
@@ -140,6 +141,12 @@ def bronze_has_telemetry(year: int, round_number: int, session: str = "R",
                          root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
     """True if Bronze holds car and position telemetry (False for a laps-only ingestion)."""
     return all(table_path(BRONZE, t, year, round_number, session, root).exists() for t in BRONZE_TELEMETRY_TABLES)
+
+
+def bronze_has_pit_stops(year: int, round_number: int, session: str = "R",
+                         root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
+    """True if Bronze holds F1's pit-stop record (the manifest's "pit_stops" says why not, if not)."""
+    return table_path(BRONZE, BRONZE_PIT_STOPS_TABLE, year, round_number, session, root).exists()
 
 
 def report_path(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:

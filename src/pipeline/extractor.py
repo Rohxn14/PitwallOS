@@ -26,10 +26,18 @@ extractor ask FastF1 for exactly the same data (laps, car and position telemetry
 weather, race control), so they share ONE cache folder: the "FastF1 Cache Location"
 in the app settings (default `.fastf1-cache/`). A race replayed once is ingested
 here without touching the network, and the other way round.
+
+Pit stops: F1's timing feed also publishes its own record of every pit stop, with the time
+the car stood still in its box (PitStopTime) and the time from pit entry to pit exit
+(PitLaneTime). FastF1 does not read that part of the feed, so the extractor downloads it
+itself, through FastF1's download cache and rate limiter, into the `pit_stops` table. F1
+has published it since the 2024 United States GP (round 19); for earlier races there is
+no such file, and the manifest says "not published".
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -46,6 +54,15 @@ FASTF1_LOGGER = "fastf1"
 # What FastF1's soft_exceptions wrapper logs at DEBUG, with the exception, right after the
 # warning of a part it failed to load. This pair is what tells a failure from a warning.
 FASTF1_FAILURE_TRACE = "Traceback for failure in"
+
+# F1's pit-stop record (see the module docstring). The file server answers 403 for a file that
+# does not exist, i.e. a session F1 published no pit-stop record for.
+LIVETIMING_URL = "https://livetiming.formula1.com"
+PIT_STOP_PAGE = "PitStopSeries.json"
+PIT_STOPS_TABLE = lake.BRONZE_PIT_STOPS_TABLE
+PIT_STOP_COLUMNS = ["RacingNumber", "Lap", "PitStopTime", "PitLaneTime", "Timestamp"]
+NOT_PUBLISHED_HTTP = (403, 404)
+PUBLISHED, NOT_PUBLISHED = "published", "not published"   # the manifest's "pit_stops"
 
 
 class ExtractionError(RuntimeError):
@@ -234,11 +251,86 @@ def collect_tables(session, telemetry: bool = True) -> Dict[str, pd.DataFrame]:
     return tables
 
 
+# --- F1's pit-stop record ---------------------------------------------------------
+
+def parse_pit_stops(payload: Dict[str, Any]) -> pd.DataFrame:
+    """
+    F1's PitStopSeries (the final state of that part of the feed) -> one row per pit stop, every
+    field as delivered (text), in PIT_STOP_COLUMNS. Nothing is converted, renamed or dropped here.
+    """
+    rows = []
+    for number, entries in (payload.get("PitTimes") or {}).items():
+        if isinstance(entries, dict):        # the feed can number a list's items instead of listing them
+            entries = [entries[k] for k in sorted(entries, key=int)]
+        for entry in entries or []:
+            stop = entry.get("PitStop") or {}
+            rows.append({"RacingNumber": stop.get("RacingNumber", number), "Lap": stop.get("Lap"),
+                         "PitStopTime": stop.get("PitStopTime"), "PitLaneTime": stop.get("PitLaneTime"),
+                         "Timestamp": entry.get("Timestamp")})
+    return pd.DataFrame(rows, columns=PIT_STOP_COLUMNS).astype("string")
+
+
+def download_pit_stops(api_path: str) -> Optional[pd.DataFrame]:
+    """
+    F1's pit-stop record for one session (api_path: FastF1's Session.api_path), as delivered.
+
+    Returns None when F1 published none for the session. Raises ExtractionError when the download
+    fails, so a broken connection is retried rather than written down as "not published".
+    """
+    from fastf1.req import Cache   # FastF1's download cache and rate limiter (enable the cache first)
+
+    url = LIVETIMING_URL + api_path + PIT_STOP_PAGE
+    try:
+        response = Cache.requests_get(url)
+    except Exception as err:
+        raise ExtractionError(f"Failed to download F1's pit-stop record ({type(err).__name__}: {err})") from err
+    if response.status_code in NOT_PUBLISHED_HTTP:
+        return None
+    if response.status_code != 200:
+        raise ExtractionError(f"Failed to download F1's pit-stop record (HTTP {response.status_code}: {url})")
+    return parse_pit_stops(json.loads(response.content.decode("utf-8-sig")))
+
+
+def _write_pit_stops(pit_stops: pd.DataFrame, identity: Dict[str, Any], year: int, round_number: int,
+                     session_type: str, lake_root: str) -> Dict[str, Any]:
+    path = lake.table_path(lake.BRONZE, PIT_STOPS_TABLE, year, round_number, session_type, lake_root)
+    lake.write_table(pit_stops, path, metadata=identity)
+    return {"rows": int(len(pit_stops)), "bytes": int(path.stat().st_size), "columns": list(pit_stops.columns)}
+
+
+def add_pit_stops(year: int, round_number: int, session_type: str = "R",
+                  lake_root: str = lake.DEFAULT_LAKE_ROOT, cache_dir: Optional[str] = None,
+                  api_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Add F1's pit-stop record to a session already in Bronze, ingested before the extractor fetched
+    it. Only that one file is downloaded; the manifest is rewritten last, as in extract_session.
+
+    api_path: the session's path on F1's timing service (default: from FastF1's event schedule).
+    Returns {'pit_stops': PUBLISHED or NOT_PUBLISHED, 'rows': stops written}.
+    """
+    import fastf1
+
+    manifest = lake.read_manifest(year, round_number, session_type, lake_root)
+    _enable_cache(cache_dir or fastf1_cache_dir())
+    if api_path is None:
+        api_path = fastf1.get_session(year, round_number, session_type).api_path
+    pit_stops = download_pit_stops(api_path)
+
+    tables = dict(manifest.get("tables", {}))
+    if pit_stops is not None:
+        identity = {k: manifest[k] for k in ("season", "round", "session", "event_name", "location", "country")}
+        tables[PIT_STOPS_TABLE] = _write_pit_stops(pit_stops, identity, year, round_number, session_type, lake_root)
+    manifest.update(pit_stops=PUBLISHED if pit_stops is not None else NOT_PUBLISHED, tables=tables)
+    lake.write_manifest(manifest, year, round_number, session_type, lake_root)
+    return {"pit_stops": manifest["pit_stops"], "rows": 0 if pit_stops is None else int(len(pit_stops))}
+
+
 def extract_session(year: int, round_number: int, session_type: str = "R",
                     lake_root: str = lake.DEFAULT_LAKE_ROOT,
                     cache_dir: Optional[str] = None,
                     session: Any = None,
-                    telemetry: bool = True) -> Dict[str, Any]:
+                    telemetry: bool = True,
+                    pit_stops: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """
     Ingest one session into Bronze.
 
@@ -249,6 +341,8 @@ def extract_session(year: int, round_number: int, session_type: str = "R",
             app settings, the one the replay uses.
         session: an already-loaded session object. Used by tests to avoid the network.
         telemetry: False = laps only (no car / position telemetry downloaded or written).
+        pit_stops: with `session` only: F1's pit-stop record for it, as delivered (None: not
+            published). Without `session` it is downloaded along with the session.
 
     Returns:
         Summary dict (paths, row counts, sizes, timing).
@@ -258,9 +352,12 @@ def extract_session(year: int, round_number: int, session_type: str = "R",
     if session is None:
         session, fastf1_warnings = _load_fastf1_session(year, round_number, session_type,
                                                         cache_dir or fastf1_cache_dir(), telemetry=telemetry)
+        pit_stops = download_pit_stops(session.api_path)
 
     tables = collect_tables(session, telemetry=telemetry)
     warnings = tables.pop("_warnings")
+    if pit_stops is not None:
+        tables[PIT_STOPS_TABLE] = pit_stops
 
     if tables["laps"].empty:
         raise ValueError(f"No lap data for {year} round {round_number} session '{session_type}'. Nothing written.")
@@ -303,6 +400,7 @@ def extract_session(year: int, round_number: int, session_type: str = "R",
         "fastf1_version": fastf1_version,
         "warnings": warnings,
         "fastf1_warnings": fastf1_warnings,
+        "pit_stops": PUBLISHED if pit_stops is not None else NOT_PUBLISHED,
         "tables": table_stats,
     }
     # Written last: the manifest is what marks this Bronze as complete (lake.has_bronze).

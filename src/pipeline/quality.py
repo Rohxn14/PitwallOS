@@ -94,4 +94,7 @@ def race_quality(year: int, round_number: int, session: str = "R",
         "bronze_telemetry": lake.bronze_has_telemetry(year, round_number, session, root),
         "bronze_warnings": len(manifest.get("warnings", [])),
         "fastf1_warnings": len(manifest.get("fastf1_warnings", [])),
+        # F1's own pit-stop record: published / not published / None (Bronze ingested before it was fetched)
+        "f1_pit_stop_record": manifest.get("pit_stops"),
+        "pit_stop_times": int(laps["pit_stop_time_sec"].notna().sum()) if "pit_stop_time_sec" in laps else None,
     }

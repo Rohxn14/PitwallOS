@@ -155,6 +155,18 @@
         "Time",
         "Status"
       ]
+    },
+    "pit_stops": {
+      "rows": 27,
+      "bytes": 4455,
+      "columns": [
+        "RacingNumber",
+        "Lap",
+        "PitStopTime",
+        "PitLaneTime",
+        "Timestamp"
+      ]
     }
-  }
+  },
+  "pit_stops": "published"
 }

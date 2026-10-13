@@ -33,7 +33,7 @@ them in three layers:
 
 | Layer | Holds | Rules |
 |---|---|---|
-| **Bronze** | Raw FastF1 tables, as delivered (laps, weather, track status, race control, results, telemetry) | Never changed after download |
+| **Bronze** | Raw FastF1 tables, as delivered (laps, weather, track status, race control, results, telemetry), plus F1's own pit-stop record (since late 2024) | Never changed after download |
 | **Silver** | Cleaned laps with flags: pit passage kind (tyre change, pass-through, retired), stints, safety car / VSC / red flag, clean lap, wet tyre, weather; telemetry on a shared 10 Hz clock | Never invent a value; never delete a lap, flag it |
 | **Gold** | One row per lap, ready for models: fuel estimate, gaps, recent pace, next-lap target | Every feature is known when the lap ends (a test enforces no leakage) |
 
@@ -58,7 +58,7 @@ size, its uncertainty and a ledger of what was left out, and why.
 | Step | Measures | Result, 2023-2025 |
 |---|---|---|
 | 1. Lap selection | Which laps show true pace; safety car, VSC and red-flag periods from the official feed | 65,698 pace laps of 77,713; periods match Race Control's log |
-| 2. Pit stops | Time lost to a stop, per circuit and under neutralisations | Green stop 22.5 s (median), from 18.1 s (Spa) to 29.5 s (Singapore) |
+| 2. Pit stops | Time lost to a stop, per circuit and under neutralisations; time in the pit lane and stationary (F1's own figure, since late 2024) | Green stop 22.5 s (median), from 18.1 s (Spa) to 29.5 s (Singapore); a typical stop stands still 2.7 s |
 | 3. Tyre wear | Degradation per compound, corrected for fuel burning off | Soft +0.064, medium +0.049, hard +0.044 s per lap of tyre age |
 | 4. Dirty air | The cost of following another car | +0.33 ± 0.03 s per lap within 1.5 s; +0.78 s within 0.5 s |
 | 5. Undercuts | Real attempts: outcome, and where the time came from | 148 attempts, 45 % worked (95 % CI 37-53 %); 76 % from less than 1 s behind |

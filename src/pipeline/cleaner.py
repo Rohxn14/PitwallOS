@@ -17,7 +17,7 @@ Silver rules:
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -77,9 +77,11 @@ def _compound(raw: pd.Series) -> pd.Series:
 # --- laps ------------------------------------------------------------------
 
 def clean_laps(laps: pd.DataFrame, weather: pd.DataFrame,
-               season: int, round_number: int, session: str) -> Tuple[pd.DataFrame, Dict[str, int]]:
+               season: int, round_number: int, session: str,
+               pit_stops: Optional[pd.DataFrame] = None) -> Tuple[pd.DataFrame, Dict[str, int]]:
     """
-    Bronze laps (+ weather) -> Silver lap table. Pure function: no file access.
+    Bronze laps (+ weather, + F1's pit-stop record if published) -> Silver lap table. Pure
+    function: no file access.
 
     Returns (silver_laps, report) where report counts every row dropped.
     """
@@ -160,11 +162,56 @@ def clean_laps(laps: pd.DataFrame, weather: pd.DataFrame,
     out = _attach_weather(out, weather)
     out = out.sort_values(["driver_code", "lap_number"]).reset_index(drop=True)
     out = _add_pit_kind_and_stint(out)
+    out, stop_report = attach_pit_stops(out, pit_stops)
+    report.update(stop_report)
 
     report["output_rows"] = int(len(out))
     report["clean_laps"] = int(out["is_clean_lap"].sum())
     for kind in PIT_KINDS:
         report[f"pit_{kind}"] = int((out["pit_kind"] == kind).sum())
+    return out, report
+
+
+def attach_pit_stops(laps: pd.DataFrame, pit_stops: Optional[pd.DataFrame]) -> Tuple[pd.DataFrame, Dict[str, int]]:
+    """
+    F1's own times for each pit stop, on the stop's in-lap (F1 numbers a stop by its in-lap):
+
+        pit_stop_time_sec  the car stationary in its box (F1's PitStopTime, to 0.1 s)
+        pit_lane_time_sec  pit entry to pit exit (F1's PitLaneTime)
+
+    Null on every other lap, and on every lap of a race F1 published no record for (before 2024
+    round 19): unknown, never 0. A published stop that matches no in-lap, a second record of the
+    same stop and a value that is not a number are counted in the report, never silently dropped.
+    """
+    out = laps.copy()
+    out["pit_stop_time_sec"] = np.nan
+    out["pit_lane_time_sec"] = np.nan
+    report = {"pit_stops_published": 0, "pit_stops_matched": 0, "dropped_pit_stop_duplicates": 0,
+              "dropped_pit_stops_unmatched": 0, "pit_stop_values_not_numbers": 0}
+    if pit_stops is None or pit_stops.empty:
+        return out, report
+
+    stops = pd.DataFrame({
+        "driver_number": pit_stops["RacingNumber"].astype("string").str.strip(),
+        "lap_number": pd.to_numeric(pit_stops["Lap"], errors="coerce"),
+        "pit_stop_time_sec": pd.to_numeric(pit_stops["PitStopTime"], errors="coerce"),
+        "pit_lane_time_sec": pd.to_numeric(pit_stops["PitLaneTime"], errors="coerce"),
+    })
+    report["pit_stops_published"] = int(len(stops))
+    for col, raw in (("pit_stop_time_sec", "PitStopTime"), ("pit_lane_time_sec", "PitLaneTime")):
+        report["pit_stop_values_not_numbers"] += int((stops[col].isna() & pit_stops[raw].notna()).sum())
+    stops = stops.dropna(subset=["driver_number", "lap_number"])
+    stops["lap_number"] = stops["lap_number"].astype("int64")
+    duplicate = stops.duplicated(["driver_number", "lap_number"], keep="first")
+    report["dropped_pit_stop_duplicates"] = int(duplicate.sum())
+    stops = stops[~duplicate]
+
+    in_laps = out.loc[out["is_in_lap"], ["driver_number", "lap_number"]].reset_index()
+    matched = in_laps.merge(stops, on=["driver_number", "lap_number"], how="inner")
+    out.loc[matched["index"], "pit_stop_time_sec"] = matched["pit_stop_time_sec"].to_numpy()
+    out.loc[matched["index"], "pit_lane_time_sec"] = matched["pit_lane_time_sec"].to_numpy()
+    report["pit_stops_matched"] = int(len(matched))
+    report["dropped_pit_stops_unmatched"] = int(len(stops) - len(matched))
     return out, report
 
 
@@ -450,7 +497,11 @@ def build_silver(year: int, round_number: int, session: str = "R",
     def bronze(table: str) -> pd.DataFrame:
         return lake.read_table(lake.table_path(lake.BRONZE, table, year, round_number, session, lake_root))
 
-    laps, lap_report = clean_laps(bronze("laps"), bronze("weather"), year, round_number, session)
+    # F1's pit-stop record: only for races it was published for, and only in Bronze ingested since the
+    # extractor fetches it (`backfill --pit-stops` adds it to older Bronze). Otherwise the times are unknown.
+    has_stops = lake.bronze_has_pit_stops(year, round_number, session, lake_root)
+    laps, lap_report = clean_laps(bronze("laps"), bronze("weather"), year, round_number, session,
+                                  pit_stops=bronze(lake.BRONZE_PIT_STOPS_TABLE) if has_stops else None)
     contracts.validate(laps, contracts.SILVER_LAPS, "Silver laps")
     laps_path = lake.table_path(lake.SILVER, "laps", year, round_number, session, lake_root)
     lake.write_table(laps, laps_path, metadata=identity)

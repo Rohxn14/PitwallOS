@@ -31,6 +31,13 @@ to 29.5 s (Singapore), while stops inside one race agree to about 1.8 s (IQR).
 
 Strategic stops exclude red-flag tyre changes (free, and made by nearly the whole field).
 
+Each stop also carries two times that say how the stop itself went, apart from the laps around it:
+  pit_lane_sec     pit entry to pit exit, from the timing (every race)
+  stationary_sec   the car standing still in its box, F1's own figure (published since 2024 round 19;
+                   unknown before). A slow tyre change shows here first.
+The race's typical stop (typical_stop) is the median of its green stops: the yardstick a single stop
+is compared with.
+
 Run it over every race in the lake:
 
     python -m src.analytics.stops --season 2023 2024 2025
@@ -60,8 +67,8 @@ REFERENCE_OF = {GREEN: DRIVER_REFERENCE, YELLOW: DRIVER_REFERENCE, SAFETY_CAR: F
 
 STOP_COLUMNS = [
     "driver_code", "team", "stop_number", "in_lap", "out_lap", "condition", "compound_before",
-    "compound_after", "tyre_age_before", "in_lap_sec", "out_lap_sec", "reference_kind", "reference_sec",
-    "reference_n", "loss_sec", "loss_note",
+    "compound_after", "tyre_age_before", "in_lap_sec", "out_lap_sec", "pit_lane_sec", "stationary_sec",
+    "reference_kind", "reference_sec", "reference_n", "loss_sec", "loss_note",
 ]
 
 
@@ -125,6 +132,10 @@ def stops(classified: pd.DataFrame) -> pd.DataFrame:
                    "compound_after": out_lap["compound"] if out_lap is not None else pd.NA,
                    "in_lap_sec": in_lap["lap_time_sec"],
                    "out_lap_sec": out_lap["lap_time_sec"] if out_lap is not None else np.nan,
+                   "pit_lane_sec": (float(out_lap["pit_out_sec"]) - float(in_lap["pit_in_sec"])
+                                    if out_lap is not None else np.nan),
+                   # Silver built before F1's record was fetched has no such column: unknown
+                   "stationary_sec": float(in_lap.get("pit_stop_time_sec", np.nan)),
                    "reference_kind": None, "reference_sec": np.nan, "reference_n": 0, "loss_sec": np.nan,
                    "loss_note": None}
             if out_lap is None:                 # Silver only marks a tyre change when a next lap exists
@@ -178,6 +189,17 @@ def pit_loss(stop_table: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["condition", "stops", "measured", "median_sec", "q25_sec", "q75_sec"])
 
 
+def typical_stop(stop_table: pd.DataFrame) -> Dict[str, Any]:
+    """
+    The race's typical stop: the median pit-lane time and stationary time of its green stops, with
+    how many stops each rests on (stationary is NaN, n 0, where F1 published no times).
+    """
+    green = stop_table[stop_table["condition"] == GREEN]
+    lane, still = green["pit_lane_sec"].dropna(), green["stationary_sec"].dropna()
+    return {"pit_lane_sec": float(lane.median()) if len(lane) else np.nan, "pit_lane_n": int(len(lane)),
+            "stationary_sec": float(still.median()) if len(still) else np.nan, "stationary_n": int(len(still))}
+
+
 def stop_counts(stop_table: pd.DataFrame) -> pd.DataFrame:
     """Per driver: tyre changes, strategic stops (red-flag tyre changes left out) and the in-laps."""
     rows = []
@@ -202,6 +224,11 @@ class RaceStops:
         """The circuit's pit loss: median loss of the green stops (None if there were none)."""
         green = self.pit_loss[self.pit_loss["condition"] == GREEN]
         return None if green.empty or pd.isna(green["median_sec"].iloc[0]) else float(green["median_sec"].iloc[0])
+
+    @property
+    def typical(self) -> Dict[str, Any]:
+        """typical_stop(): the median green stop's pit-lane and stationary time."""
+        return typical_stop(self.stops)
 
 
 def race_stops(classified: pd.DataFrame) -> RaceStops:
@@ -232,6 +259,7 @@ def season_summary(seasons: Sequence[int], root: str = lake.DEFAULT_LAKE_ROOT) -
         result = race_stops(classify_laps(laps))
         loss = result.pit_loss.set_index("condition")
         get = lambda cond, col, default=np.nan: loss.loc[cond, col] if cond in loss.index else default
+        typical = result.typical
         try:
             event = lake.read_manifest(season, round_number, "R", root).get("event_name")
         except FileNotFoundError:
@@ -244,6 +272,8 @@ def season_summary(seasons: Sequence[int], root: str = lake.DEFAULT_LAKE_ROOT) -
             "sc_stops": int(get(SAFETY_CAR, "measured", 0)), "sc_loss_sec": get(SAFETY_CAR, "median_sec"),
             "vsc_stops": int(get(VSC, "measured", 0)), "vsc_loss_sec": get(VSC, "median_sec"),
             "red_flag_stops": int(get(RED_FLAG, "stops", 0)),
+            "green_pit_lane_sec": typical["pit_lane_sec"], "green_stationary_sec": typical["stationary_sec"],
+            "stationary_times": int(result.stops["stationary_sec"].notna().sum()),
         })
     return pd.DataFrame(rows).sort_values(["season", "round"]).reset_index(drop=True) if rows else pd.DataFrame()
 
@@ -266,6 +296,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"measurable loss). Circuit pit loss (median of green stops): median {green.median():.1f} s over races, "
           f"from {green.min():.1f} to {green.max():.1f} s. Safety-car stops: median {middle('sc_loss_sec')}, "
           f"VSC: {middle('vsc_loss_sec')} (medians of race medians).")
+    timed = table[table["stationary_times"] > 0]
+    print(f"Time in the pit lane (green stops): median {middle('green_pit_lane_sec')} over races. F1's stationary "
+          f"times: {int(timed['stationary_times'].sum()):,} stops in {len(timed)} races (published since 2024 round "
+          f"19), typical stop {middle('green_stationary_sec')} (median of race medians).")
     print(f"Report: {lake.write_report(table, 'pit_loss', args.lake)}")
     return 0
 

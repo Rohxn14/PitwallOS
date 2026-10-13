@@ -41,7 +41,31 @@ def test_analyze_window_has_a_stops_tab(golden_lake):
         assert win.tabs.tabText(win.tabs.indexOf(tab)) == "Stops"
         assert tab.table.rowCount() == 45
         assert tab.summary_lbl.text().startswith("Circuit pit loss (green stops):")
+        assert "stationary times not published for this race" in tab.summary_lbl.text()
         assert tab.canvas.points
+    finally:
+        win.close()
+        win.deleteLater()
+
+
+def test_stops_tab_shows_f1s_stationary_times_where_published(golden_lake):
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from src.gui.race_analysis_window import RaceAnalysisWindow
+    from src.gui.stops_tab import COLUMNS
+    from src.pipeline.cleaner import build_silver
+
+    build_silver(*QATAR, "R", lake_root=golden_lake, telemetry=False)
+    win = RaceAnalysisWindow(*QATAR, root=golden_lake)
+    try:
+        table = win.stops_tab.table
+        rows = {(table.item(i, 0).text(), table.item(i, 2).text()): i for i in range(table.rowCount())}
+        ver = rows[("VER", "35")]
+        assert table.item(ver, COLUMNS.index("Stationary s")).text() == "2.5"
+        assert table.item(ver, COLUMNS.index("Pit lane s")).text() == "28.317"
+        assert "s stationary" in win.stops_tab.summary_lbl.text()
     finally:
         win.close()
         win.deleteLater()

@@ -519,7 +519,7 @@ class RaceAnalysisWindow(QMainWindow):
         try:
             if self.pace is None:
                 raise missing
-            undercuts = race_undercuts(self.pace.laps)
+            undercuts = race_undercuts(self.pace.laps, stops.stops if stops is not None else None)
             self.undercuts_tab.set_race(undercuts, self.pace.laps)
         except Exception as e:
             self.undercuts_tab.show_error(f"{type(e).__name__}: {e}")

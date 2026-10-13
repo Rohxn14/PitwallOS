@@ -89,6 +89,49 @@ def test_wanting_telemetry_from_a_laps_only_bronze_means_downloading_again(golde
     assert report.loc[BRITISH, "status"] == FAILED and report.loc[BRITISH, "stage"] == "bronze"
 
 
+# --- F1's pit-stop record added to older Bronze ----------------------------------------
+
+def forget_pit_stops(lake_root, round_number):
+    """Make a fixture race look like Bronze ingested before the extractor fetched F1's pit-stop record."""
+    manifest = lake.read_manifest(2024, round_number, root=lake_root)
+    del manifest["pit_stops"]
+    lake.write_manifest(manifest, 2024, round_number, root=lake_root)
+
+
+def test_pit_stops_option_adds_the_record_only_where_it_was_never_checked(golden_lake, downloads, monkeypatch):
+    added = []
+
+    def fake_add(year, round_number, session, root):
+        added.append(round_number)                              # the Qatar fixture already holds the file
+        manifest = lake.read_manifest(year, round_number, session, root)
+        lake.write_manifest({**manifest, "pit_stops": extractor.PUBLISHED}, year, round_number, session, root)
+        return {"pit_stops": extractor.PUBLISHED, "rows": 27}
+
+    monkeypatch.setattr(extractor, "add_pit_stops", fake_add)
+    forget_pit_stops(golden_lake, QATAR)
+    run(golden_lake, [BRITISH, QATAR])                          # without the option: nothing is downloaded
+    assert added == [] and downloads == []
+
+    report, _ = run(golden_lake, [BRITISH, QATAR], pit_stops=True)
+    assert added == [QATAR] and downloads == []                 # one small download; British was checked before
+    assert report.loc[QATAR, "source"] == backfill.ADDED_PIT_STOPS and report.loc[BRITISH, "source"] == backfill.ALREADY_BUILT
+    assert report.loc[QATAR, "f1_pit_stop_record"] == "published" and report.loc[QATAR, "pit_stop_times"] == 27
+    assert report.loc[BRITISH, "f1_pit_stop_record"] == "not published" and report.loc[BRITISH, "pit_stop_times"] == 0
+
+    run(golden_lake, [BRITISH, QATAR], pit_stops=True)
+    assert added == [QATAR]                                     # resumable: never asked twice
+
+
+def test_a_failed_pit_stop_download_is_retried_then_reported(golden_lake, downloads, monkeypatch):
+    def broken(*args):
+        raise ConnectionError("no network in tests")
+
+    monkeypatch.setattr(extractor, "add_pit_stops", broken)
+    forget_pit_stops(golden_lake, QATAR)
+    report, waits = run(golden_lake, [QATAR], pit_stops=True)
+    assert waits == [1.0, 2.0] and report.loc[QATAR, "status"] == FAILED and report.loc[QATAR, "stage"] == "bronze"
+
+
 # --- isolated and retried -----------------------------------------------------------
 
 def test_a_failing_race_does_not_stop_the_others(golden_lake, downloads):
