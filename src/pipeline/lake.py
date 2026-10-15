@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import pyarrow as pa
@@ -172,6 +172,17 @@ def read_report(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> pd.DataFrame:
 def list_sessions(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT) -> List[Path]:
     """Every file of `table` across all sessions in a layer, sorted."""
     return sorted((Path(root) / layer).glob(f"season=*/round=*/session=*/{table}.parquet"))
+
+
+def list_races(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT,
+               session: str = "R") -> List[Tuple[int, int]]:
+    """(season, round) of every `session` holding `table` in a layer, in calendar order (round 2 before 10)."""
+    races = []
+    for path in list_sessions(layer, table, root):
+        season_part, round_part, session_part = path.parts[-4], path.parts[-3], path.parts[-2]
+        if session_part == f"session={session}":
+            races.append((int(season_part.split("=")[1]), int(round_part.split("=")[1])))
+    return sorted(races)
 
 
 def read_layer(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT) -> pd.DataFrame:

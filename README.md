@@ -64,7 +64,31 @@ size, its uncertainty and a ledger of what was left out, and why.
 | 5. Undercuts | Real attempts: outcome, and where the time came from | 148 attempts, 45 % worked (95 % CI 37-53 %); 76 % from less than 1 s behind |
 | 6. Race report | Every number of every race, checked against ranges written down before measuring | 686 numbers checked, 0 unexplained |
 
-### 4. The Analyze window
+### 4. Pace models: the next lap, and the ten after it
+
+When a lap ends, how fast will the driver's next lap be? A ladder of four models, each built to beat
+the one before it, was developed on the 46 races of 2023-2024 (cross-validated by race, never by lap)
+and then scored once on 2025, a season kept locked in the code until all four existed. Mean absolute
+error on dry laps, in seconds:
+
+| Model | What it predicts with | 1 lap ahead, 2025 | 10 laps ahead, 2025 |
+|---|---|---|---|
+| Persistence | the driver's last clean lap | 0.420 | 0.700 |
+| Linear decomposition | base pace + tyre, fuel and traffic terms fitted on other races | 0.398 | 0.644 |
+| State-space | the same, with the base pace followed by a Kalman filter | 0.386 | 0.633 |
+| LightGBM corrections | the state-space model + boosted trees that learn its errors | **0.353** | **0.569** |
+
+Each model beat the one before it at 1, 3, 5 and 10 laps ahead, by a paired bootstrap over races.
+For scale: two clean laps in a row differ by 0.365 s on average, and even a guess that sees the laps
+on both sides of a lap misses it by 0.26 s; what is left is mostly rare big misses (traffic, battles,
+restarts). Added up over ten laps, the best model's errors lean only +0.01 s one way.
+
+```bash
+python -m src.models.boosted    # every model on 2023-2024, at 1, 3, 5 and 10 laps ahead
+python -m src.models.holdout    # every model fitted on 2023-2024, scored on 2025
+```
+
+### 5. The Analyze window
 
 `python main.py` → pick a race → **Analyze**. Without running the replay, it shows the result,
 the race report (every number with its sample size, uncertainty and sanity check), the tyre
@@ -79,7 +103,7 @@ yet, the window builds it first.
 | 0. Pipeline | Bronze / Silver / Gold, data contracts, tests | Done |
 | 1. Backfill | 2023-2025, a quality report per race | Done |
 | 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | Done |
-| 3. Pace model | A ladder of models, each beating the last on races it has never seen: persistence → linear decomposition → state-space tyre model → gradient boosting | Planned |
+| 3. Pace model | A ladder of models, each beating the last on races it has never seen: persistence → linear decomposition → state-space tyre model → gradient boosting | Done |
 | 4. Race simulator | Replay the strategies actually driven, then Monte Carlo over safety-car timing and pace noise for "what if" questions | Planned |
 | 5. Telemetry | Corner-by-corner driver comparison; minimum-speed fade as an early sign of tyre wear | Planned |
 | 6. Presentation | A web front end over the simulator and a written case study of one race | Planned |
@@ -159,6 +183,7 @@ src/pipeline/            the data lake: extractor (Bronze), cleaner (Silver), fe
                          contracts, backfill, quality reports
 src/analytics/           race overview; Phase 2: lap selection, neutralised periods, pit stops,
                          tyre wear, dirty air, undercuts, race report
+src/models/              Phase 3: the evaluation harness and the four pace models, the 2025 test
 src/gui/                 session picker, Analyze window and its charts, insights menu
 src/interfaces/          race and qualifying replay (Arcade)
 src/insights/            live telemetry windows

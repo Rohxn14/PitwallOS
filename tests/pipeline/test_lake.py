@@ -44,6 +44,15 @@ def test_read_layer_concatenates_every_session(tmp_path):
     assert combined["round"].tolist() == [1, 1, 2, 2]
 
 
+def test_list_races_gives_calendar_order_and_only_the_asked_session(tmp_path):
+    for season, rnd, session in ((2024, 10, "R"), (2024, 2, "R"), (2023, 22, "R"), (2024, 5, "S")):
+        lake.write_table(pd.DataFrame({"round": [rnd]}),
+                         lake.table_path(lake.GOLD, "lap_features", season, rnd, session, root=tmp_path))
+    # As text, "round=10" sorts before "round=2"; the race list must not.
+    assert lake.list_races(lake.GOLD, "lap_features", root=tmp_path) == [(2023, 22), (2024, 2), (2024, 10)]
+    assert lake.list_races(lake.GOLD, "lap_features", root=tmp_path, session="S") == [(2024, 5)]
+
+
 def test_manifest_round_trip(tmp_path):
     lake.write_manifest({"event_name": "Test GP", "total_laps": 50}, 2024, 3, root=tmp_path)
     assert lake.read_manifest(2024, 3, root=tmp_path)["total_laps"] == 50

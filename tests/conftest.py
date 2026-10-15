@@ -38,6 +38,23 @@ def golden_silver_laps(tmp_path_factory):
     return out
 
 
+@pytest.fixture(scope="session")
+def golden_gold_lake(tmp_path_factory):
+    """
+    A lake with both reference races built to Gold (laps only), once per test session: what the
+    Phase 3 models read. Shared between tests, so treat it as read-only (copy it to write into it).
+    """
+    from src.pipeline.cleaner import build_silver
+    from src.pipeline.feature_store import build_gold
+
+    root = tmp_path_factory.mktemp("gold") / "lake"
+    shutil.copytree(FIXTURE_LAKE, root)
+    for race in GOLDEN_RACES:
+        build_silver(*race, "R", lake_root=str(root), telemetry=False)
+        build_gold(*race, "R", lake_root=str(root))
+    return str(root)
+
+
 @pytest.fixture
 def hungary_lake(tmp_path):
     """A temporary lake pre-loaded with real Bronze lap data for the 2024 Hungarian GP."""
