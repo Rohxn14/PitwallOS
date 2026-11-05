@@ -74,10 +74,17 @@ class RaceSelectionWindow(QMainWindow):
         header_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         
         header_layout.addWidget(header_label)
-        subtitle_label = QLabel("Replay a race, or analyze it from the data lake")
+        subtitle_label = QLabel("Replay a race, analyze it from the data lake, or play it as the strategist")
         subtitle_label.setStyleSheet("color: gray;")
         header_layout.addWidget(subtitle_label)
         header_layout.addStretch()
+        blind_btn = QPushButton("🎮 Play a blind race")
+        blind_btn.setCursor(Qt.PointingHandCursor)
+        blind_btn.setFixedHeight(32)
+        blind_btn.setToolTip("The strategist game on a random dry race of 2023-2024:\n"
+                             "the circuit, the year and the names stay hidden until the flag.")
+        blind_btn.clicked.connect(lambda: self._open_game(None))
+        header_layout.addWidget(blind_btn)
         header_layout.addWidget(settings_btn)
         main_layout.addLayout(header_layout)
 
@@ -282,7 +289,8 @@ class RaceSelectionWindow(QMainWindow):
             self.session_list_layout.addWidget(label)
         else:
             hint = QLabel("Replay: watch it, with the live insight windows.\n"
-                          "Analyze: read it from the data lake, no replay needed.")
+                          "Analyze: read it from the data lake, no replay needed.\n"
+                          "Play: be the team's strategist (the game; the dry races of 2023-2024).")
             hint.setWordWrap(True)
             hint.setStyleSheet("color: gray; font-size: 11px;")
             self.session_list_layout.addWidget(hint)
@@ -313,6 +321,17 @@ class RaceSelectionWindow(QMainWindow):
                                    "Builds the race into the lake first if it is not there yet.")
             analyze_btn.clicked.connect(lambda _, e=ev: self._on_analyze_clicked(e))
             buttons.addWidget(analyze_btn)
+            from src.gui.game_window import PLAYABLE_SEASONS     # imported once, when a race is first shown
+            try:
+                playable = int(ev.get("year") or self.selected_year) in PLAYABLE_SEASONS
+            except (TypeError, ValueError):
+                playable = False
+            if playable:
+                play_btn = QPushButton("🎮  Play")
+                play_btn.setToolTip("The strategist game on this race: your calls at its big moments,\n"
+                                    "then your result next to the real team's.")
+                play_btn.clicked.connect(lambda _, e=ev: self._on_play_clicked(e))
+                buttons.addWidget(play_btn)
         layout.addLayout(buttons)
         return row
 
@@ -329,6 +348,23 @@ class RaceSelectionWindow(QMainWindow):
             QMessageBox.critical(self, "Analyze", "Pick a year first.")
             return
         window = RaceAnalysisWindow(int(year), round_no, event_name=str(ev.get("event_name", "")))
+        window.show()
+        self._analysis_windows = [w for w in self._analysis_windows if w.isVisible()] + [window]
+
+    def _on_play_clicked(self, ev):
+        """Open the strategist game (src/gui/game_window.py) on this race, named."""
+        year = ev.get("year") or self.selected_year
+        try:
+            key = (int(year), int(ev.get("round_number")))
+        except (TypeError, ValueError):
+            QMessageBox.critical(self, "Play", "This event has no year or round number.")
+            return
+        self._open_game(key)
+
+    def _open_game(self, key):
+        """The game window, in this process; key None: a blind race."""
+        from src.gui.game_window import GameWindow
+        window = GameWindow(key)
         window.show()
         self._analysis_windows = [w for w in self._analysis_windows if w.isVisible()] + [window]
 

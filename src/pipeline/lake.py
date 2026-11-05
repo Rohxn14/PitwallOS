@@ -17,15 +17,21 @@ Layout (one folder per session, same shape in every layer):
           lap_features.parquet
       reports/
           backfill_2024.csv       one row per race: status, error, every quality count
+      models/
+          sim_game.pkl            fitted models saved for reuse (the game's); rebuildable from the lake
 
 Bronze telemetry (car_telemetry, pos_telemetry) is optional: a race ingested
 laps only has no telemetry files, and its manifest says "telemetry": false.
+Since F1 locked its timing archive (October 2026) telemetry can also come from
+OpenF1, added to a laps-only Bronze as delivered: openf1_car_data,
+openf1_location, openf1_laps (src/pipeline/openf1.py; manifest "openf1").
 """
 
 from __future__ import annotations
 
 import json
 import os
+import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -41,8 +47,11 @@ LAYERS = (BRONZE, SILVER, GOLD)
 MANIFEST_NAME = "_manifest.json"
 GOLD_TABLE = "lap_features"
 BRONZE_TELEMETRY_TABLES = ("car_telemetry", "pos_telemetry")
+BRONZE_OPENF1_TABLES = ("openf1_car_data", "openf1_location", "openf1_laps")   # the same feed, from OpenF1
+FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from
 BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
 REPORTS_DIR = "reports"
+MODELS_DIR = "models"
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
 # ("São Paulo" shows as "SÃ£o Paulo"). pandas reads it back with clean column names.
 REPORT_ENCODING = "utf-8-sig"
@@ -137,10 +146,25 @@ def has_bronze(year: int, round_number: int, session: str = "R", root: PathLike 
     return (session_dir(BRONZE, year, round_number, session, root) / MANIFEST_NAME).exists()
 
 
+def bronze_telemetry_source(year: int, round_number: int, session: str = "R",
+                            root: PathLike = DEFAULT_LAKE_ROOT) -> Optional[str]:
+    """Where Bronze's car and position telemetry came from: FASTF1, OPENF1, or None (laps only).
+    FastF1's own tables win when both are there."""
+    def has(tables: Tuple[str, ...]) -> bool:
+        return all(table_path(BRONZE, t, year, round_number, session, root).exists() for t in tables)
+    if has(BRONZE_TELEMETRY_TABLES):
+        return FASTF1
+    # The manifest is rewritten last (openf1.add_telemetry): tables without its "openf1" entry are a crash's leftovers.
+    if (has(BRONZE_OPENF1_TABLES) and has_bronze(year, round_number, session, root)
+            and OPENF1 in read_manifest(year, round_number, session, root)):
+        return OPENF1
+    return None
+
+
 def bronze_has_telemetry(year: int, round_number: int, session: str = "R",
                          root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
-    """True if Bronze holds car and position telemetry (False for a laps-only ingestion)."""
-    return all(table_path(BRONZE, t, year, round_number, session, root).exists() for t in BRONZE_TELEMETRY_TABLES)
+    """True if Bronze holds car and position telemetry from either source (False for a laps-only ingestion)."""
+    return bronze_telemetry_source(year, round_number, session, root) is not None
 
 
 def bronze_has_pit_stops(year: int, round_number: int, session: str = "R",
@@ -167,6 +191,28 @@ def write_report(df: pd.DataFrame, name: str, root: PathLike = DEFAULT_LAKE_ROOT
 def read_report(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> pd.DataFrame:
     """Read a report written by write_report."""
     return pd.read_csv(report_path(name, root), encoding=REPORT_ENCODING)
+
+
+def model_path(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
+    """Fitted models saved for reuse (a pickle), e.g. model_path('sim_game'). Rebuildable from the lake: a cache."""
+    return Path(root) / MODELS_DIR / f"{name}.pkl"
+
+
+def write_model(obj: object, name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
+    """Save fitted models atomically (temporary file + rename), like every table."""
+    path = model_path(name, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)
+    return path
+
+
+def read_model(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> object:
+    """Load models saved by write_model. Only ever this project's own files: a pickle runs code when loaded."""
+    with open(model_path(name, root), "rb") as f:
+        return pickle.load(f)
 
 
 def list_sessions(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT) -> List[Path]:

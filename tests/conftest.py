@@ -55,6 +55,30 @@ def golden_gold_lake(tmp_path_factory):
     return str(root)
 
 
+@pytest.fixture(scope="session")
+def game_lake(golden_gold_lake, tmp_path_factory):
+    """
+    The strategist game's lake (Phase 4 step 4): the three reference races built to Gold (British, Qatar and Hungary
+    2024), with the game's models fitted on them (each race played with the fold that never saw it) and saved in the
+    lake, once per test session: (models, root). Tests may add reports to it; nothing else changes it.
+    """
+    from src.pipeline import lake
+    from src.pipeline.cleaner import build_silver
+    from src.pipeline.feature_store import build_gold
+    from src.simulator import game
+
+    root = tmp_path_factory.mktemp("game") / "lake"
+    shutil.copytree(golden_gold_lake, root)
+    shutil.copytree(HUNGARY_FIXTURE_LAKE / "bronze" / "season=2024" / "round=13",
+                    root / "bronze" / "season=2024" / "round=13")
+    build_silver(*HUNGARY, "R", lake_root=str(root), telemetry=False)
+    build_gold(*HUNGARY, "R", lake_root=str(root))
+    models = game.fit_models(str(root), seasons=(2024,))
+    lake.write_model({"version": game.MODELS_VERSION, "folds": models.folds, "misses": models.misses,
+                      "dry": models.dry}, game.MODELS_NAME, str(root))
+    return models, str(root)
+
+
 @pytest.fixture
 def hungary_lake(tmp_path):
     """A temporary lake pre-loaded with real Bronze lap data for the 2024 Hungarian GP."""
