@@ -26,7 +26,6 @@ import random
 from typing import Callable, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QMainWindow, QProgressBar, QPushButton, QStackedWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,

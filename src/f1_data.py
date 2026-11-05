@@ -266,10 +266,22 @@ def _process_single_driver(args):
     }
 
 
+class TelemetryNotAvailable(RuntimeError):
+    """The session loaded without car data, so it cannot be replayed."""
+
+
 def load_session(year, round_number, session_type="R"):
     # session_type: 'R' (Race), 'S' (Sprint) etc.
     session = fastf1.get_session(year, round_number, session_type)
     session.load(telemetry=True, weather=True)
+    # FastF1 only logs a failed download and returns anyway. Without this check the replay's worker processes
+    # crash later on `lap.get_telemetry()` with KeyError, and the picker can only say the process exited.
+    if len(session.car_data) == 0:
+        raise TelemetryNotAvailable(
+            f"No telemetry for {year} round {round_number} '{session_type}'. F1's timing archive has needed a login "
+            "(F1 TV Access) since October 2026, and this session is not in the local FastF1 cache, so it cannot be "
+            "replayed. Analyze still works for every race in the lake."
+        )
     return session
 
 

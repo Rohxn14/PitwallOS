@@ -28,7 +28,7 @@ driver-races): soft 4 (qualifying sets), medium 3, hard 2.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pandas as pd
 

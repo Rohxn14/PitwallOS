@@ -27,7 +27,7 @@ no stop left does not answer (it ran to the end, as 64 did).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd

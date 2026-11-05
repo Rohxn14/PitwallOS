@@ -83,7 +83,7 @@ from src.models.state_space import StateSpace
 from src.pipeline import lake
 from src.simulator import engine, pace, race as race_module, reactions, world as world_module
 from src.simulator.race import Race
-from src.simulator.rules import RuleBook, Rules, race_facts
+from src.simulator.rules import RuleBook, race_facts
 
 RUNGS = {"persistence": Persistence, "linear": LinearDecomposition, "state_space": StateSpace, "boosted": Boosted}
 HINDSIGHT = "hindsight"
@@ -341,7 +341,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(by_kind(rows).to_string())
         mixed = rows[rows["mixed"] & (rows["start"] == LAP_5)]
         if len(mixed):
-            print(f"\nMixed races (intermediates or wets), from lap 5: "
+            print("\nMixed races (intermediates or wets), from lap 5: "
                   + ", ".join(f"{s} {weighted(g, 'places_off'):.2f}" for s, g in mixed.groupby("source", sort=False))
                   + f"; do nothing {weighted(mixed[mixed['source'] == SOURCES[0]], 'do_nothing'):.2f}")
     print(f"\nReport: {lake.write_report(rows, REPORT, args.lake)}")

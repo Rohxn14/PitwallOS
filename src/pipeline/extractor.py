@@ -197,7 +197,10 @@ def _load_fastf1_session(year: int, round_number: int, session_type: str, cache_
         session.load(laps=True, telemetry=telemetry, weather=True, messages=True)
 
     if log.failures:
-        raise ExtractionError(f"FastF1 could not load part of {year} round {round_number} '{session_type}': "
+        # FastF1 says "No data for this session!" for a 401 too, which reads as if the race had no data
+        raise ExtractionError(f"FastF1 could not load part of {year} round {round_number} '{session_type}'. F1's "
+                              "timing archive has needed a login since October 2026, so only sessions already in "
+                              "FastF1's cache or its mirror (2021-2022) load without one: "
                               + "; ".join(log.failures))
     return session, log.warnings
 

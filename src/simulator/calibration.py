@@ -213,7 +213,6 @@ def misses_of(race: Race, fold: FoldModels, root: str = lake.DEFAULT_LAKE_ROOT) 
     inputs = evaluate.model_inputs(race.laps)
     first = race_module.first_start_lap(race)
     offsets, shifts, places, places_all = [], [], [], []
-    real_finish = race_module.finish_ranks(race)
     for lap in range(first or race.total_laps, race.total_laps - 10, STEP_LAPS):
         rows = race_module.last_rows(race, race_module.start_state(race, lap))
         if not len(rows) or not bool(evaluate.pace_seen(rows).all()):
