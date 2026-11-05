@@ -39,7 +39,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-DEFAULT_LAKE_ROOT = "data"
+# "data" under the working folder, unless PITWALLOS_LAKE says where the lake is: a session in a git worktree
+# points it at the one real lake. Do NOT link data/ into a worktree instead: on Windows `git worktree remove`
+# follows a junction and deletes what it points to (Git 2.52, tested on a dummy folder, 2026-11-05).
+DEFAULT_LAKE_ROOT = os.environ.get("PITWALLOS_LAKE", "data")
 
 BRONZE, SILVER, GOLD = "bronze", "silver", "gold"
 LAYERS = (BRONZE, SILVER, GOLD)

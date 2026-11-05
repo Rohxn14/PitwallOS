@@ -62,9 +62,10 @@ def test_verstappens_options_at_lap_20(folds):
     assert table["expected_rank"].between(1, 20).all() and table["chance"].between(0, 1).all()
 
 
-def test_the_hungary_undercut_replayed_out_of_fold(folds):
+def test_the_hungary_undercut_replayed_out_of_fold(folds, three_races):
     races, fitted = folds
-    rows = pd.DataFrame(decisions.undercut_calls(races[HUNGARY], fitted[HUNGARY], sources=("hindsight", decisions.BEST)))
+    rows = pd.DataFrame(decisions.undercut_calls(races[HUNGARY], fitted[HUNGARY], sources=("hindsight", decisions.BEST),
+                                                 root=three_races))
     norris = rows[(rows["driver"] == "NOR") & (rows["in_lap"] == 45)]
     assert set(norris["source"]) == {"hindsight", decisions.BEST}
     first = norris.iloc[0]
@@ -72,7 +73,7 @@ def test_the_hungary_undercut_replayed_out_of_fold(folds):
     assert first["gap_before_sec"] == pytest.approx(2.051) and first["real_gain_sec"] == pytest.approx(5.428)
     assert bool(first["real_worked"]) and norris["sim_gap_after_sec"].notna().all()
     assert set(norris["sim_worked"]) <= {True, False}
-    values = pd.DataFrame(decisions.undercut_value(races[HUNGARY], fitted[HUNGARY]))
+    values = pd.DataFrame(decisions.undercut_value(races[HUNGARY], fitted[HUNGARY], root=three_races))
     nor = values[(values["driver"] == "NOR") & (values["in_lap"] == 45)].iloc[0]
     assert nor["value_sec"] == pytest.approx(nor["gap_waiting_sec"] - nor["gap_undercut_sec"])
 

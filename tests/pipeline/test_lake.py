@@ -1,5 +1,8 @@
 """lake.py: paths, round-trips, atomic writes."""
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +14,21 @@ from src.pipeline import lake
 def test_table_path_follows_hive_layout(tmp_path):
     path = lake.table_path(lake.SILVER, "laps", 2024, 12, "R", root=tmp_path)
     assert path == tmp_path / "silver" / "season=2024" / "round=12" / "session=R" / "laps.parquet"
+
+
+def _default_path_with(environment):
+    """A table's default path in a fresh interpreter: the lake's root is read once, at import."""
+    code = "from src.pipeline import lake; print(lake.table_path(lake.SILVER, 'laps', 2024, 12))"
+    done = subprocess.run([sys.executable, "-c", code], env=environment, cwd=Path(__file__).parents[2],
+                          capture_output=True, text=True, check=True)
+    return Path(done.stdout.strip())
+
+
+def test_the_lake_is_data_unless_the_environment_says_otherwise(tmp_path):
+    plain = {key: value for key, value in os.environ.items() if key != "PITWALLOS_LAKE"}
+    tail = Path("silver") / "season=2024" / "round=12" / "session=R" / "laps.parquet"
+    assert _default_path_with(plain) == Path("data") / tail
+    assert _default_path_with({**plain, "PITWALLOS_LAKE": str(tmp_path)}) == tmp_path / tail
 
 
 def test_unknown_layer_is_rejected():

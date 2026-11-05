@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
+      fail-fast: false   # one version failing must not cancel the others: we want all three results
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
 
