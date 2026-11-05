@@ -9,7 +9,7 @@ download is faked, to fail, so retries and failure isolation can be tested.
 import pandas as pd
 import pytest
 
-from src.pipeline import backfill, contracts, extractor, lake
+from src.pipeline import backfill, contracts, extractor, lake, openf1
 from src.pipeline.backfill import FAILED, OK, RetryPolicy
 
 BRITISH, QATAR = 12, 23
@@ -25,7 +25,12 @@ def downloads(monkeypatch):
         calls.append(round_number)
         raise ConnectionError("no network in tests")
 
+    def fake_openf1(year, round_number, session, root):
+        calls.append(("openf1", round_number))
+        raise ConnectionError("no network in tests")
+
     monkeypatch.setattr(extractor, "extract_session", fake_extract)
+    monkeypatch.setattr(openf1, "add_telemetry", fake_openf1)
     return calls
 
 
@@ -83,10 +88,23 @@ def test_rebuild_redoes_silver_and_gold_from_bronze_offline(golden_lake, downloa
     assert downloads == []
 
 
-def test_wanting_telemetry_from_a_laps_only_bronze_means_downloading_again(golden_lake, downloads):
+def test_wanting_telemetry_from_a_laps_only_bronze_means_downloading_it_from_openf1(golden_lake, downloads):
+    # F1's archive is locked (October 2026): the telemetry comes from OpenF1, added to the Bronze laps we have;
+    # FastF1 is not asked to download the race again.
     report, _ = run(golden_lake, [BRITISH], telemetry=True)
-    assert downloads == [BRITISH] * 3                        # tried, not silently built without telemetry
+    assert downloads == [("openf1", BRITISH)] * 3            # tried, not silently built without telemetry
     assert report.loc[BRITISH, "status"] == FAILED and report.loc[BRITISH, "stage"] == "bronze"
+    assert report.loc[BRITISH, "source"] == backfill.ADDED_OPENF1
+
+
+def test_once_openf1_delivered_silver_is_built_with_telemetry(golden_lake, monkeypatch):
+    added, built = [], []
+    monkeypatch.setattr(openf1, "add_telemetry", lambda year, rnd, session, root: added.append(rnd))
+    monkeypatch.setattr(backfill, "build_silver", lambda year, rnd, session, root, telemetry: built.append(telemetry))
+    monkeypatch.setattr(backfill, "build_gold", lambda year, rnd, session, root: None)
+    report, _ = run(golden_lake, [QATAR], telemetry=True)
+    assert added == [QATAR] and built == [True]
+    assert report.loc[QATAR, "source"] == backfill.ADDED_OPENF1
 
 
 # --- F1's pit-stop record added to older Bronze ----------------------------------------

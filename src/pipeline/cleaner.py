@@ -17,7 +17,7 @@ Silver rules:
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -52,6 +52,7 @@ TELEMETRY_HZ = 10
 TELEMETRY_MAX_GAP_SEC = 2.0   # never interpolate across a hole longer than this
 THROTTLE_NO_DATA = 100.0      # the feed sends 104 to mean "no reading"
 SPEED_MAX_KMH = 400.0
+GEAR_MAX = 8                  # gear codes above it (9-25, 128 in the pit lane, seen in OpenF1 2023-2025) are not a gear
 DRS_OPEN_CODES = (10, 12, 14)
 
 REQUIRED_BRONZE_LAP_COLUMNS = (
@@ -430,9 +431,12 @@ def resample_driver(car: pd.DataFrame, pos: pd.DataFrame, lap_start_sec: np.ndar
     hold = _hold_index(grid, ct)
     safe = np.clip(hold, 0, None)
     known = (hold >= 0) & ~car_bad
-    gear = pd.array(car["nGear"].to_numpy()[safe], dtype="Int8")
-    drs = pd.array(car["DRS"].to_numpy()[safe], dtype="Int8")
-    brake = pd.array(car["Brake"].to_numpy(dtype=bool)[safe], dtype="boolean")
+    gear = pd.array(car["nGear"].to_numpy()[safe], dtype="Int16")
+    not_a_gear = ((gear < 0) | (gear > GEAR_MAX)).fillna(False).to_numpy(dtype=bool)
+    gear[not_a_gear] = pd.NA                                # unknown, not invented: counted in clean_telemetry
+    gear = gear.astype("Int8")
+    drs = pd.array(car["DRS"].to_numpy()[safe], dtype="Int16")
+    brake = car["Brake"].astype("boolean").array[safe]   # nullable: OpenF1's "no reading" stays unknown
     gear[~known], drs[~known], brake[~known] = pd.NA, pd.NA, pd.NA
     out["gear"], out["brake"], out["drs"] = gear, brake, drs
     out["drs_open"] = out["drs"].isin(DRS_OPEN_CODES)
@@ -481,7 +485,28 @@ def clean_telemetry(car: pd.DataFrame, pos: pd.DataFrame, silver_laps: pd.DataFr
     out.insert(0, "season", int(ident["season"]))
     report["output_rows"] = int(len(out))
     report["gap_rows"] = int(out["is_data_gap"].sum())
+    gears = pd.to_numeric(car["nGear"], errors="coerce")
+    report["samples_not_a_gear"] = int(((gears < 0) | (gears > GEAR_MAX)).sum())
     return out, report
+
+
+def telemetry_tables(bronze: Callable[[str], pd.DataFrame], year: int, round_number: int, session: str,
+                     lake_root: str) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """
+    Bronze's car and position telemetry in FastF1's shape, + where it came from: FastF1's own tables, or (since F1
+    locked its archive, October 2026) OpenF1's tables put on the session clock by telemetry_clock.py.
+    """
+    source = lake.bronze_telemetry_source(year, round_number, session, lake_root)
+    if source == lake.FASTF1:
+        return bronze("car_telemetry"), bronze("pos_telemetry"), {"telemetry_source": source}
+    if source == lake.OPENF1:
+        from src.pipeline import telemetry_clock   # Phase 5, typed by Rohan: imported only when it is needed
+        t0, clock = telemetry_clock.session_offset(bronze("openf1_laps"), bronze("laps"))
+        car = telemetry_clock.car_samples(bronze("openf1_car_data"), t0)
+        pos = telemetry_clock.position_samples(bronze("openf1_location"), t0)
+        return car, pos, {"telemetry_source": source, **clock}
+    raise ValueError(f"Bronze for {year} round {round_number} has no telemetry (laps only): add it first, e.g. "
+                     "python -m src.pipeline.backfill --season YEAR --rounds N --telemetry")
 
 
 # --- orchestration ---------------------------------------------------------
@@ -510,7 +535,9 @@ def build_silver(year: int, round_number: int, session: str = "R",
     tel_report: Dict[str, Any] = {}
     tel_path = None
     if telemetry:
-        tel, tel_report = clean_telemetry(bronze("car_telemetry"), bronze("pos_telemetry"), laps)
+        car, pos, clock = telemetry_tables(bronze, year, round_number, session, lake_root)
+        tel, tel_report = clean_telemetry(car, pos, laps)
+        tel_report.update(clock)
         contracts.validate(tel, contracts.SILVER_TELEMETRY, "Silver telemetry")
         tel_path = lake.table_path(lake.SILVER, "telemetry", year, round_number, session, lake_root)
         lake.write_table(tel, tel_path, metadata=identity)

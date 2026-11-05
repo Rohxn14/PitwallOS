@@ -5,7 +5,8 @@ Phase 1 backfill: many races into the lake with one command (src/pipeline/backfi
     python -m src.pipeline.backfill --season 2022 2023 2024 2025
     python -m src.pipeline.backfill --season 2024 --rounds 12 23    # only these rounds
     python -m src.pipeline.backfill --season 2024 --rebuild         # redo Silver + Gold from Bronze (offline)
-    python -m src.pipeline.backfill --season 2024 --telemetry       # also telemetry (~100 MB download per race)
+    python -m src.pipeline.backfill --season 2024 --telemetry       # also telemetry: from OpenF1 for a race whose
+                                                                    # Bronze has its laps (~2 min, ~8 MB a race)
     python -m src.pipeline.backfill --season 2024 --pit-stops       # add F1's pit-stop record to older Bronze
 
 The same Bronze -> Silver -> Gold steps as runner.py, in a loop, with four properties that a
@@ -38,7 +39,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from src.pipeline import extractor, lake, quality
+from src.pipeline import extractor, lake, openf1, quality
 from src.pipeline.cleaner import build_silver
 from src.pipeline.feature_store import build_gold
 
@@ -60,6 +61,7 @@ OK, FAILED = "ok", "failed"
 FROM_FASTF1 = "fastf1"      # extracted now (FastF1's cache if it had it, else downloaded)
 FROM_BRONZE = "bronze"      # Bronze already in the lake: Silver + Gold rebuilt from it, offline
 ADDED_PIT_STOPS = "bronze+stops"   # Bronze in the lake; F1's pit-stop record downloaded; Silver + Gold rebuilt
+ADDED_OPENF1 = "bronze+openf1"    # Bronze laps in the lake; telemetry downloaded from OpenF1; Silver + Gold rebuilt
 ALREADY_BUILT = "existing"  # Gold already in the lake: nothing done
 
 REPORT_LEAD = ["season", "round", "event_name", "status", "stage", "error", "source", "seconds"]
@@ -153,6 +155,12 @@ def build_race(year: int, round_number: int, *, root: str = lake.DEFAULT_LAKE_RO
                     row["source"] = ADDED_PIT_STOPS
                     with_retry(lambda: extractor.add_pit_stops(year, round_number, SESSION, root), round_number,
                                policy=policy, sleep=sleep)
+            elif telemetry and lake.has_bronze(year, round_number, SESSION, root):
+                # F1's archive needs a login since October 2026, so FastF1 cannot fetch the telemetry any more:
+                # OpenF1's copy of the same feed is added to the Bronze we have.
+                row["source"] = ADDED_OPENF1
+                with_retry(lambda: openf1.add_telemetry(year, round_number, SESSION, root), round_number,
+                           policy=policy, sleep=sleep)
             else:
                 row["source"] = FROM_FASTF1
                 extract_with_retry(year, round_number, root=root, telemetry=telemetry, policy=policy, sleep=sleep)

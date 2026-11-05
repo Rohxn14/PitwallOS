@@ -90,3 +90,15 @@ def test_position_zero_zero_is_treated_as_no_fix():
     pos.loc[5:7, ["X", "Y"]] = 0.0
     out = resample(car_stream(SRC), pos)
     assert out["x"].min() > 0.0
+
+
+def test_a_gear_code_that_is_not_a_gear_becomes_unknown():
+    # OpenF1 2023-2025 carries codes like 9-25, and 128 in the pit lane: not a gear. Unknown, not invented, not held over.
+    gear = np.full(len(SRC), 6)
+    middle = (SRC > 104.0) & (SRC < 106.0)
+    gear[middle] = 128
+    out = resample(car_stream(SRC, gear=gear))
+    inside = out[(out["session_time_sec"] > 104.3) & (out["session_time_sec"] < 105.9)]
+    assert inside["gear"].isna().all() and str(out["gear"].dtype) == "Int8"
+    assert (out.loc[out["session_time_sec"] < 104.0, "gear"] == 6).all()
+    assert (out.loc[out["session_time_sec"] > 106.3, "gear"] == 6).all()
