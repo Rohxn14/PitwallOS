@@ -1,7 +1,7 @@
 # PitwallOS 🏎️
 
-An end-to-end Formula 1 data project: a data lake of 70 races, an analytics engine that measures what actually decides a
-race, a ladder of pace models and a race simulator. Every number comes with its sample size and uncertainty, and is tested
+An end-to-end Formula 1 data project: a data lake of 70 races with telemetry, an analytics engine that measures what
+actually decides a race, and a ladder of pace models. Every number comes with its sample size and uncertainty, and is tested
 against a known fact of a real race.
 
 PitwallOS is built on top of **[F1 Race Replay](https://github.com/IAmTomShaw/f1-race-replay) by
@@ -21,8 +21,8 @@ PitwallOS is built on top of **[F1 Race Replay](https://github.com/IAmTomShaw/f1
              + track evolution
              + noise
 
-Each phase works on these terms. The analytics measure them from real races, the models learn them, and the simulator uses
-them. Every phase is checked by the one after it.
+Each phase works on these terms. The analytics measure them from real races, the models learn them, and telemetry explains
+them corner by corner. Every phase is checked by the one after it.
 
 ## What 70 races say
 
@@ -82,23 +82,6 @@ four existed.
 For scale: two clean laps in a row differ by 0.365 s on average, and even a guess that sees the laps on both sides of a lap misses it
 by 0.26 s. What is left is mostly rare big misses (traffic, battles, restarts).
 
-## The race simulator
-
-The simulator replays a race from any lap on those pace models, with measured rules for passing, safety cars and pit stops, then
-runs it hundreds of times with safety cars, retirements and the teams' reactions drawn at random. It answers what-if questions as
-odds. A small strategy game built on it lets you make the pit calls from a team's seat ([guide](docs/phase4_simulator.md)).
-
-Tested once on 2025, a season it never saw, the odds stayed honest, within what luck alone explains:
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/honest_odds-dark.png">
-  <img alt="Podium chance given by the simulator on 2025 against how often it happened: the points follow the diagonal within wide 95 % intervals, from lap 5 and from halfway." src="docs/images/honest_odds-light.png">
-</picture>
-
-The same test found its limit. From lap 5, its finishing order on 2025 was no clearer than assuming nobody moves (2.01 places off
-per car against 1.94), and its odds were barely sharper than a simple history guess. Given each driver's real pace it does beat that
-(1.29 places). The weak link is forecasting who is fast in a new season.
-
 ## How it is built
 
 ### The data lake
@@ -132,9 +115,8 @@ tab per analysis, with hover tooltips on every chart.
 | 1. Backfill | 2023-2025, a quality report per race | Done |
 | 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | Done |
 | 3. Pace model | Persistence → linear decomposition → state-space → gradient boosting, on races each has never seen | Done |
-| 4. Race simulator | Replay of real races, what-ifs, Monte Carlo odds, tested on 2025 | Done |
-| 5. Telemetry | In the lake, with a quality report. Next: the track model, corner-by-corner comparison, minimum-speed fade as an early sign of tyre wear | In progress |
-| 6. Presentation | A web front end and a written case study of one race | Planned |
+| 4. Telemetry | In the lake, with a quality report. Next: the track model, corner-by-corner comparison, minimum-speed fade as an early sign of tyre wear | In progress |
+| 5. Presentation | A web front end and a written case study of one race | Planned |
 
 ## Getting started
 
@@ -147,7 +129,7 @@ python -m venv venv
 # Windows: .\venv\Scripts\activate      macOS / Linux: source venv/bin/activate
 python -m pip install -r requirements-dev.txt
 python -m pytest            # run the test suite, needs no data
-python main.py              # pick a race, then Replay, Analyze or Play
+python main.py              # pick a race, then Replay or Analyze
 ```
 
 The lake is not in the repository: you build it. **Since October 2026 F1's timing archive needs a login.** FastF1 3.9+ can use an F1 TV
@@ -209,13 +191,12 @@ fixes it (thanks to @el-mandaloriano, #12).
 ## Project layout
 
 ```
-main.py                  entry point: session picker, then Replay, Analyze or Play
+main.py                  entry point: session picker, then Replay or Analyze
 src/pipeline/            the data lake: extractor and OpenF1 (Bronze), cleaner (Silver), feature store (Gold),
                          telemetry clock and quality report, contracts, backfill
 src/analytics/           lap selection, neutralised periods, pit stops, tyre wear, dirty air, undercuts, race report
 src/models/              the evaluation harness, the four pace models, the 2025 test
-src/simulator/           replay engine, measured rules, what-ifs, Monte Carlo odds, the game's logic
-src/gui/                 session picker, Analyze window and its charts, game window, insights menu
+src/gui/                 session picker, Analyze window and its charts, insights menu
 src/interfaces/          race and qualifying replay (Arcade)
 src/insights/            live telemetry windows
 src/lib/                 running order, tyres, time, settings

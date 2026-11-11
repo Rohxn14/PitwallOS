@@ -17,8 +17,6 @@ Layout (one folder per session, same shape in every layer):
           lap_features.parquet
       reports/
           backfill_2024.csv       one row per race: status, error, every quality count
-      models/
-          sim_game.pkl            fitted models saved for reuse (the game's); rebuildable from the lake
 
 Bronze telemetry (car_telemetry, pos_telemetry) is optional: a race ingested
 laps only has no telemetry files, and its manifest says "telemetry": false.
@@ -31,7 +29,6 @@ from __future__ import annotations
 
 import json
 import os
-import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -54,7 +51,6 @@ BRONZE_OPENF1_TABLES = ("openf1_car_data", "openf1_location", "openf1_laps")   #
 FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from
 BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
 REPORTS_DIR = "reports"
-MODELS_DIR = "models"
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
 # ("São Paulo" shows as "SÃ£o Paulo"). pandas reads it back with clean column names.
 REPORT_ENCODING = "utf-8-sig"
@@ -194,28 +190,6 @@ def write_report(df: pd.DataFrame, name: str, root: PathLike = DEFAULT_LAKE_ROOT
 def read_report(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> pd.DataFrame:
     """Read a report written by write_report."""
     return pd.read_csv(report_path(name, root), encoding=REPORT_ENCODING)
-
-
-def model_path(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
-    """Fitted models saved for reuse (a pickle), e.g. model_path('sim_game'). Rebuildable from the lake: a cache."""
-    return Path(root) / MODELS_DIR / f"{name}.pkl"
-
-
-def write_model(obj: object, name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
-    """Save fitted models atomically (temporary file + rename), like every table."""
-    path = model_path(name, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "wb") as f:
-        pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, path)
-    return path
-
-
-def read_model(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> object:
-    """Load models saved by write_model. Only ever this project's own files: a pickle runs code when loaded."""
-    with open(model_path(name, root), "rb") as f:
-        return pickle.load(f)
 
 
 def list_sessions(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT) -> List[Path]:

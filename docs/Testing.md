@@ -15,7 +15,6 @@ and 3.12 on every push to `main` and on every pull request.
 | `tests/test_pipeline.py` | End to end on real Bronze fixtures, including the leakage test (Gold rebuilt from a cut race must be identical) |
 | `tests/analytics/` | Each Phase 2 step: simulated races with known physics recovered exactly, and hand-checked facts of real races |
 | `tests/models/` | The harness and each pace model: made-up races with the formula's physics (`simulated_race.py`), no leak, golden laps |
-| `tests/simulator/` | Engine rules by hand (`hand_race.py`), real lap times reproducing real races exactly, what-ifs, Monte Carlo, events, the game |
 | `tests/gui/` | Charts off-screen, and the windows with Qt's `offscreen` platform |
 | `tests/lib/`, `tests/insights/` | The replay's running order, rewind behaviour of the live windows |
 

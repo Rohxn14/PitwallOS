@@ -26,7 +26,6 @@ from matplotlib.colors import LinearSegmentedColormap, Normalize  # noqa: E402
 from src.analytics import dirty_air  # noqa: E402
 from src.analytics.undercuts import wilson  # noqa: E402
 from src.pipeline import lake  # noqa: E402
-from src.simulator.calibration import reliability  # noqa: E402
 
 OUT = Path(__file__).parent / "images"
 SEASONS = (2023, 2024, 2025)
@@ -270,32 +269,6 @@ def track_speed(theme: Dict, root: str):
     return fig
 
 
-def honest_odds(theme: Dict, root: str):
-    table = lake.read_report("sim_test_calibration", root)
-    full = table[table["config"] == "+ retirements"]
-    fig, ax = _figure(theme, 7.6, 6.2, "The simulator's odds stay honest on a season it never saw",
-                      "Chance of a podium given by the simulator on 2025, against how often it really happened.")
-    fig.subplots_adjust(left=0.11, right=0.96, top=0.84, bottom=0.12)
-    ax.plot([0, 1], [0, 1], color=theme["muted"], linewidth=1.5, zorder=1, label="honest: chance = what happened")
-    for i, (start, name) in enumerate((("lap 5", "from lap 5"), ("halfway", "from halfway"))):
-        bins = reliability(full[full["start"] == start], "podium")
-        colour = theme["series"][i]
-        low, high = zip(*(wilson(int(round(h * n)), int(n)) for h, n in zip(bins["happened"], bins["n"])))
-        ax.vlines(bins["chance"], low, high, color=colour, linewidth=1.2, alpha=0.7, zorder=2)
-        ax.scatter(bins["chance"], bins["happened"], s=60, color=colour, marker="os"[i], edgecolors=theme["surface"],
-                   linewidths=1.5, zorder=3, label=name)
-    legend = ax.legend(loc="upper left", frameon=False, labelcolor=theme["ink"], fontsize=11)
-    legend.set_zorder(5)
-    ax.set_xlim(-0.02, 1.02)
-    ax.set_ylim(-0.02, 1.02)
-    ax.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
-    ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
-    ax.set_xlabel("chance the simulator gave", color=theme["ink2"])
-    ax.set_ylabel("how often it happened", color=theme["ink2"])
-    _note(fig, theme, f"{len(full):,} cars at the two start points of the dry races of 2025. Nothing of the real race known. Lines are 95 % intervals.")
-    return fig
-
-
 CHARTS: Dict[str, Callable] = {
     "track_speed": track_speed,
     "tyre_wear": tyre_wear,
@@ -303,7 +276,6 @@ CHARTS: Dict[str, Callable] = {
     "pit_loss": pit_loss,
     "undercuts": undercut_success,
     "pace_models": pace_models,
-    "honest_odds": honest_odds,
 }
 
 
