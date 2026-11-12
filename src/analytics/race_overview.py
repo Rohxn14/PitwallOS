@@ -302,7 +302,7 @@ def load_overview(year: int, round_number: int, session: str = "R",
     status = lake_status(year, round_number, session, root)
     if not status.ready:
         raise FileNotFoundError(f"{year} round {round_number} is not in the lake yet (Bronze + Silver needed).")
-    results = lake.read_table(lake.table_path(lake.BRONZE, "results", year, round_number, session, root))
+    results = lake.read_table(lake.results_path(year, round_number, session, root))
     laps = lake.read_table(lake.table_path(lake.SILVER, "laps", year, round_number, session, root))
     manifest = lake.read_manifest(year, round_number, session, root)
 

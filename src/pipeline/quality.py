@@ -75,7 +75,8 @@ def race_quality(year: int, round_number: int, session: str = "R",
     gold_rows = len(pd.read_parquet(gold_path, columns=["lap_number"])) if gold_path.exists() else None
 
     counts = data_quality(laps)
-    bronze_rows = int(manifest["tables"]["laps"]["rows"])
+    lap_table = lake.openf1_table("laps") if manifest.get("source") == lake.OPENF1 else "laps"
+    bronze_rows = int(manifest["tables"][lap_table]["rows"])
     laps_with = lambda flag: laps.loc[laps[flag], "lap_number"]
     return {
         "event_name": manifest.get("event_name"),

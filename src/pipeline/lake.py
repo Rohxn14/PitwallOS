@@ -53,6 +53,7 @@ GOLD_TABLE = "lap_features"
 BRONZE_TELEMETRY_TABLES = ("car_telemetry", "pos_telemetry")
 BRONZE_OPENF1_TABLES = ("openf1_car_data", "openf1_location", "openf1_laps")   # the same feed, from OpenF1
 FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from (and, as the manifest's "source", its Bronze)
+SILVER_RESULTS_TABLE = "results"       # the classification, written to Silver when Bronze is OpenF1's (FastF1's is in Bronze)
 BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
 REPORTS_DIR = "reports"
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
@@ -79,6 +80,12 @@ def table_path(layer: str, table: str, year: int, round_number: int, session: st
 def openf1_table(endpoint: str) -> str:
     """Bronze's table for one OpenF1 endpoint, as delivered: 'race_control' -> 'openf1_race_control'."""
     return f"{OPENF1}_{endpoint}"
+
+
+def results_path(year: int, round_number: int, session: str = "R", root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
+    """The classification in FastF1's shape: Silver's, translated from OpenF1, or else the FastF1 Bronze's own."""
+    silver = table_path(SILVER, SILVER_RESULTS_TABLE, year, round_number, session, root)
+    return silver if silver.exists() else table_path(BRONZE, "results", year, round_number, session, root)
 
 
 def gold_features_path(year: int, round_number: int, session: str = "R",

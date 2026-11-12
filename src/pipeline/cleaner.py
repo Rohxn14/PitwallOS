@@ -75,6 +75,13 @@ def _compound(raw: pd.Series) -> pd.Series:
     return compound.mask(no_compound)
 
 
+def _optional_flag(df: pd.DataFrame, column: str) -> pd.Series:
+    """A True/False Bronze column that only some sources have; all False without it."""
+    if column not in df.columns:
+        return pd.Series(False, index=df.index)
+    return df[column].fillna(False).astype(bool)
+
+
 # --- laps ------------------------------------------------------------------
 
 def clean_laps(laps: pd.DataFrame, weather: pd.DataFrame,
@@ -131,8 +138,9 @@ def clean_laps(laps: pd.DataFrame, weather: pd.DataFrame,
     })
 
     # --- flags: what kind of lap was this? ---
-    out["is_in_lap"] = out["pit_in_sec"].notna()
-    out["is_out_lap"] = out["pit_out_sec"].notna()
+    # A pit passage is known by its time, or (OpenF1, races it has no pit table for) by a flag without a time.
+    out["is_in_lap"] = out["pit_in_sec"].notna() | _optional_flag(df, "PitInLap")
+    out["is_out_lap"] = out["pit_out_sec"].notna() | _optional_flag(df, "PitOutLap")
     out["is_pit_lap"] = out["is_in_lap"] | out["is_out_lap"]
     out["is_lap1"] = out["lap_number"] == 1
     out["is_green"] = status == STATUS_GREEN                 # green for the WHOLE lap
@@ -491,12 +499,21 @@ def clean_telemetry(car: pd.DataFrame, pos: pd.DataFrame, silver_laps: pd.DataFr
 
 
 def telemetry_tables(bronze: Callable[[str], pd.DataFrame], year: int, round_number: int, session: str,
-                     lake_root: str) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+                     lake_root: str, lights_out_utc: Optional[pd.Timestamp] = None
+                     ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
     Bronze's car and position telemetry in FastF1's shape, + where it came from: FastF1's own tables, or (since F1
     locked its archive, October 2026) OpenF1's tables put on the session clock by telemetry_clock.py.
+
+    lights_out_utc: for a Bronze built from OpenF1 alone, the instant session time counts from (the translation
+    found it); the laps are on that clock already, so the telemetry needs no clock of its own.
     """
     source = lake.bronze_telemetry_source(year, round_number, session, lake_root)
+    if source == lake.OPENF1 and lights_out_utc is not None:
+        from src.pipeline import telemetry_clock
+        return (telemetry_clock.car_samples(bronze("openf1_car_data"), lights_out_utc),
+                telemetry_clock.position_samples(bronze("openf1_location"), lights_out_utc),
+                {"telemetry_source": source, "t0_utc": str(lights_out_utc)})
     if source == lake.FASTF1:
         return bronze("car_telemetry"), bronze("pos_telemetry"), {"telemetry_source": source}
     if source == lake.OPENF1:
@@ -522,11 +539,25 @@ def build_silver(year: int, round_number: int, session: str = "R",
     def bronze(table: str) -> pd.DataFrame:
         return lake.read_table(lake.table_path(lake.BRONZE, table, year, round_number, session, lake_root))
 
-    # F1's pit-stop record: only for races it was published for, and only in Bronze ingested since the
-    # extractor fetches it (`backfill --pit-stops` adds it to older Bronze). Otherwise the times are unknown.
-    has_stops = lake.bronze_has_pit_stops(year, round_number, session, lake_root)
-    laps, lap_report = clean_laps(bronze("laps"), bronze("weather"), year, round_number, session,
-                                  pit_stops=bronze(lake.BRONZE_PIT_STOPS_TABLE) if has_stops else None)
+    # A Bronze built from OpenF1 alone holds OpenF1's own tables: the translation turns them into the tables below,
+    # on a clock that starts at lights out. A FastF1 Bronze holds them ready-made.
+    translated = None
+    if manifest.get("source") == lake.OPENF1:
+        from src.pipeline import openf1_translate
+        translated = openf1_translate.translate(openf1_translate.read_bronze(year, round_number, session, lake_root))
+        identity["total_laps"] = translated.total_laps
+        bronze_laps, weather, pit_stops = translated.laps, translated.weather, translated.pit_stops
+    else:
+        # F1's pit-stop record: only for races it was published for, and only in Bronze ingested since the
+        # extractor fetches it (`backfill --pit-stops` adds it to older Bronze). Otherwise the times are unknown.
+        has_stops = lake.bronze_has_pit_stops(year, round_number, session, lake_root)
+        bronze_laps, weather = bronze("laps"), bronze("weather")
+        pit_stops = bronze(lake.BRONZE_PIT_STOPS_TABLE) if has_stops else None
+    laps, lap_report = clean_laps(bronze_laps, weather, year, round_number, session, pit_stops=pit_stops)
+    if translated is not None:
+        lap_report.update(translated.report)
+        lake.write_table(translated.results, lake.table_path(lake.SILVER, lake.SILVER_RESULTS_TABLE, year, round_number,
+                                                             session, lake_root), metadata=identity)
     contracts.validate(laps, contracts.SILVER_LAPS, "Silver laps")
     laps_path = lake.table_path(lake.SILVER, "laps", year, round_number, session, lake_root)
     lake.write_table(laps, laps_path, metadata=identity)
@@ -535,7 +566,8 @@ def build_silver(year: int, round_number: int, session: str = "R",
     tel_report: Dict[str, Any] = {}
     tel_path = None
     if telemetry:
-        car, pos, clock = telemetry_tables(bronze, year, round_number, session, lake_root)
+        car, pos, clock = telemetry_tables(bronze, year, round_number, session, lake_root,
+                                           translated.lights_out_utc if translated is not None else None)
         tel, tel_report = clean_telemetry(car, pos, laps)
         tel_report.update(clock)
         contracts.validate(tel, contracts.SILVER_TELEMETRY, "Silver telemetry")

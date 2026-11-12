@@ -2,8 +2,8 @@
 
 A developer's guide to how PitwallOS changed its data source. It is written piece by piece as the work is done.
 
-**Status:** piece 1 of 4 built (Bronze from OpenF1). The pipeline still runs on the FastF1 lake until the new one has been
-compared with it.
+**Status:** the new lake is built and compared (pieces 1 to 3 below). All 70 races of 2023-2025 exist in `data_openf1/` as
+Bronze, Silver and Gold, built from OpenF1 alone. The apps still read the FastF1 lake in `data/` until the swap.
 
 ## Why
 
@@ -31,10 +31,12 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 
 | Piece | What | State |
 |---|---|---|
-| 1 | Bronze: OpenF1's tables for a race, as delivered | built |
-| 2 | Translation: OpenF1's tables into the lap table the cleaner reads | next |
-| 3 | One clock for laps and telemetry, zero at lights out | measured, not built |
-| 4 | Rebuild 70 races, compare with the old lake, swap; then the replay, then FastF1 removed | planned |
+| 1 | Bronze: OpenF1's tables for a race, as delivered | done |
+| 2 | Translation: OpenF1's tables into the lap table the cleaner reads, on one clock with zero at lights out | done |
+| 3 | Rebuild 70 races, compare with the old lake | done |
+| 4 | Pace models re-scored on the new lake; swap the lakes; test fixtures re-cut | next |
+| 5 | Replay and Analyze from the lake; the 2026 races | planned |
+| 6 | FastF1 removed | planned |
 
 ## Decisions so far
 
@@ -46,7 +48,9 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 | A column mixing numbers and text | Stored as text, value by value | Parquet allows one type per column. Dropping or converting `"+1 LAP"` would lose what the source said |
 | A required table with no rows | The race fails, nothing is written | An empty table would look like "no laps were driven" |
 | Telemetry already downloaded (2 GB) | Copied from the old lake | Checked identical to a fresh download; saves about 3.5 hours of requests |
-| Session time zero | Lights out | Formula 1's official race time counts from lights out. Bronze keeps OpenF1's UTC time stamps |
+| Session time zero | Lights out: Race Control's first "SESSION STARTED" message + 0.27 s | Formula 1's official race time counts from lights out. The message is logged 0.27 s early (measured, piece 2). Bronze keeps OpenF1's UTC time stamps |
+| Pit laps without times | `PitInLap` / `PitOutLap` columns, honoured by the cleaner | OpenF1 has no pit table for six races. The pit laps are still known; their times are not, and stay null |
+| Where the classification lives | Silver `results`, written when Silver is built | The Analyze window read FastF1's results from Bronze. `lake.results_path` picks whichever exists |
 | More tables than needed today (`intervals`, `overtakes`) | Taken now | The project has just lost a source overnight. Raw data is cheap, access is not guaranteed |
 
 ## Piece 1: Bronze from OpenF1
@@ -169,3 +173,144 @@ Bronze is 0.62 GB. About 30 s a race with copied telemetry.
   copied telemetry is identical to the old lake's, row for row.
 - **Expectation, written before the run:** 67 to 70 would succeed, any failure being a required table missing for an early
   2023 race. Result: 70. The early-2023 gap was real but fell on `pit`, which is optional.
+
+
+## Piece 2: the translation
+
+### Purpose
+
+Silver's cleaner reads one table per race in FastF1's shape: a row per driver and lap with the lap time, when the lap started
+and ended, pit entry and exit, compound, tyre life, position and track status. OpenF1 spreads these over eight tables and
+leaves some out. `src/pipeline/openf1_translate.py` rebuilds that table in memory each time Silver is built. It is pure:
+tables in, tables out.
+
+### The rules, and the measurement behind each
+
+**The clock.** Session time 0 is lights out.
+
+- OpenF1 merges F1's session-status feed into Race Control's messages. The first `SESSION STARTED` exists in all 70 races.
+  In 67 it equals the start OpenF1 gives lap 1 to the millisecond. In the other three only the message is right: Japan and
+  Monaco 2024 (lap 1 is dated from the restart after a red flag, 28 and 41 minutes later) and Miami 2025 (no lap-1 start).
+- The message is logged before the lights go out. With zero at the message, the winner's last lap ends 0.27 s after the
+  official race time in every race (53 races with complete winner laps: mean 0.270 s, sd 0.036 s). The telemetry agrees:
+  cars leave the grid 0.66 s after the message, 0.39 s after message + 0.27 s, a normal reaction plus sampling delay.
+- So zero = message + 0.27 s. At Qatar 2024 the winner's last lap then ends at 5465.355 s; the official time is 5465.323 s.
+- At Zandvoort 2023 and Las Vegas 2024 FastF1's own start was 2.09 s and 0.45 s late. The new lake differs there on purpose.
+
+**Lap starts and ends.** OpenF1 gives each lap a stamped start and an exact duration (F1's official lap time).
+
+- The stamps of laps 2+ are 0.173 s late and jitter by about 40 ms. The durations are exact.
+- So laps are chained: inside an unbroken run, each start is the previous start plus the previous duration. The run as a whole
+  is placed at the median of (stamp - 0.173 s - chain). Lap 1 starts at zero and ends where lap 2 starts. A lap without a
+  duration ends where the next lap starts.
+- Against FastF1's crossing times: median difference 18 ms per race.
+- Where they disagree most, Saudi Arabia 2025, the cars' positions decide: at the new lap-end times all drivers are at the same
+  spot on the line (sd 1.2 m between drivers); at FastF1's times they are spread over 13.7 m (sd 5.3 m).
+
+**Track status.** OpenF1 has no status feed. It is rebuilt from Race Control's messages:
+
+| Message | Code |
+|---|---|
+| `SAFETY CAR DEPLOYED` | 4 |
+| `VIRTUAL SAFETY CAR DEPLOYED`, `... ENDING` | 6, 7 |
+| red flag | 5, until the next `SESSION STARTED` (not `TRACK CLEAR`: the track is clear long before the restart) |
+| `TRACK CLEAR` | 1 |
+| yellow or double yellow in a sector | 2 until that sector's `CLEAR`; hidden under a safety car or red flag |
+| `SESSION STARTED` | clears yellows left from the laps to the grid (Italy 2025 had one that would have lasted 30 minutes) |
+
+**Pits.** A pit row's `date` is the pit exit (FastF1's exit time + 0.03 to 0.12 s) and `lane_duration` is entry to exit. Entry =
+date - lane_duration, on the in-lap. Without a pit table (2023 rounds 1-6) the in- and out-laps are flagged from the lap
+table's `is_pit_out_lap`, with null times.
+
+**Tyres.** Tyre life on lap n = age when fitted + laps since + 1, after two repairs:
+
+- A stint that OpenF1 starts on the in-lap is moved to the out-lap (tyres only change in the pit lane). This also repairs the
+  empty first stint OpenF1 writes after a red flag on lap 1.
+- A stint with the same compound whose age simply carries on is the same set, driven through the pit lane: tyre life and
+  stint number continue.
+
+**The rest.** Position: the last position record up to a second after the lap ends. Deleted laps: Race Control's
+"TIME ... DELETED ... LAP n" messages, minus any reinstated. Grid: each driver's first position record (OpenF1's
+`starting_grid` is empty). Race distance: the winner's laps.
+
+**What OpenF1 cannot say.** FastF1's `IsAccurate` was its own judgement. Here a lap is inaccurate only on evidence: no lap
+time, or three sectors that do not add up to it. `FastF1Generated` is always false.
+
+### Files
+
+| File | Change |
+|---|---|
+| `src/pipeline/openf1_translate.py` | new: `lights_out`, `lap_times`, `status_timeline`, `lap_status`, `tyres_by_lap`, `pit_by_lap`, `deleted_laps`, `positions_at`, `lap_table`, `weather_table`, `results_table`, `pit_stop_record`, `translate`, `read_bronze` |
+| `src/pipeline/cleaner.py` | `build_silver` translates when the manifest says `"source": "openf1"`, writes Silver `results`, and puts the telemetry on the same zero. `clean_laps` honours `PitInLap` / `PitOutLap` |
+| `src/pipeline/lake.py` | `SILVER_RESULTS_TABLE`, `results_path` |
+| `src/analytics/race_overview.py` | reads `lake.results_path` |
+| `src/pipeline/quality.py` | reads the lap count from `openf1_laps` for an OpenF1 Bronze |
+
+### Tests
+
+`tests/pipeline/test_openf1_translate.py`, 19 tests. Small made-up tables for each rule, and a golden race: OpenF1's real
+tables for Qatar 2024 (`tests/fixtures/openf1/qatar_2024/`, 103 KB). Golden facts the code never reads: the winner crosses
+the line at the official race time, 1:31:05.323; the safety car is out on the leader's laps 1-4 and 35-42 with a virtual
+safety car on lap 40; Verstappen leads lap 1 from second on the grid; 26 tyre changes. The module was broken in 13 ways and
+every break made a test fail (one needed a test added first).
+
+## Piece 3: the rebuild, compared with the FastF1 lake
+
+    python -m src.pipeline.backfill --season 2024 --rounds 1 2 ... 24 --lake data_openf1 --telemetry --rebuild
+
+All 70 races built Silver (laps, telemetry, results) and Gold: 0 failed.
+
+### Lap by lap
+
+77,259 laps exist in both lakes (old 77,713, new 77,373). Share of those laps on which a Silver column is identical:
+
+| Column | Mean over races | Races at 99 % or more (of 70) |
+|---|---|---|
+| position | 99.7 % | 68 |
+| compound | 99.1 % | 65 |
+| tyre life | 98.1 % | 60 |
+| in-lap / out-lap | 99.9 % / 99.9 % | 70 / 68 |
+| safety car / virtual safety car / red flag | 99.7 % / 100.0 % / 99.9 % | 66 / 70 / 66 |
+| green for the whole lap | 99.4 % | 62 |
+| clean lap | 99.5 % | 63 |
+| tyre change | 99.9 % | 68 |
+| lap end within 0.1 s | 98.6 % | 60 |
+
+**46 of 70 races match at 99 % or more on every one of these columns, 52 at 98 %, 60 at 95 %.** The expectations written
+before measuring were "pretty much all" (Rohan) and "about 55" (Claude): both too high.
+
+### What the analyses say
+
+| Number | FastF1 lake | OpenF1 lake |
+|---|---|---|
+| Laps / clean laps / pace laps | 77,713 / 66,049 / 65,698 | 77,373 / 65,597 / 65,182 |
+| Green pit stop loss, median | 22.5 s | 22.2 s |
+| Tyre wear per lap, soft / medium / hard | +0.064 / +0.049 / +0.044 s | +0.063 / +0.050 / +0.044 s |
+| Cost of following | +0.327 s/lap | +0.329 s/lap |
+| Undercuts that worked | 45 % of 148 | 45 % of 146 |
+| by gap, 0-1 / 1-2 / 2-3 s | 76 / 45 / 23 % | 76 / 45 / 25 % |
+| Race report | 686 numbers, 0 unexplained | 686 numbers, 0 unexplained |
+
+Every headline of Phase 2 is reproduced to within a few hundredths.
+
+### Where the lakes differ, and which is right
+
+| Difference | Verdict |
+|---|---|
+| Crossing times, Saudi Arabia 2025 (62 % within 0.1 s) | the new lake: the cars' positions at the line prove it |
+| Race start at Zandvoort 2023 and Las Vegas 2024 | the new lake: FastF1's start was late |
+| Lap 1 times, sector 1 of lap 1, lap times behind the safety car in the pit lane | different definitions; OpenF1 has values where FastF1 had none |
+| Pit-lane time on every pit passage (the old lake: only where F1 published its pit-stop record) | the new lake has more |
+| Azerbaijan 2023: 17 % of laps not green | the old lake: Race Control never cleared a yellow in sector 3 |
+| Belgium 2025, Miami 2025, Australia 2025: tyre life | not settled: OpenF1's stints are irregular there (Miami was inconsistent in FastF1 too) |
+| 340 laps missing, some deleted laps not found (Qatar 2024: 15 of 18), laps without an end (a car that stops on track) | the old lake |
+
+### Known limits
+
+- A sector yellow that Race Control never clears stays yellow until the next `TRACK CLEAR`. Real yellows last up to 13 minutes,
+  so no time limit can tell a forgotten one from a long one. The error is on the safe side: laps lose the clean flag, none gain it.
+- A lap with no duration and no next lap has no end, so no position, weather or status.
+- Classified positions of retired cars are null (OpenF1 gives none).
+- The two constants (0.173 s, 0.27 s) are measured medians, not physical facts. If OpenF1 changes how it stamps laps they must be
+  measured again; the golden test on the official race time would fail first.
+- The pace models (Phase 3) have not yet been re-scored on the new lake.
