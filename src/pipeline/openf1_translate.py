@@ -27,6 +27,8 @@ A lap without a duration ends where the next lap starts.
 TRACK STATUS. OpenF1 has no status feed. It is rebuilt from Race Control's messages, FastF1's codes:
     SAFETY CAR DEPLOYED 4 | VIRTUAL SAFETY CAR DEPLOYED 6 | VIRTUAL SAFETY CAR ENDING 7 | RED FLAG 5
     TRACK CLEAR -> 1 (not under a red flag: that ends at the next SESSION STARTED)
+    a start announced as "RACE WILL START BEHIND THE SAFETY CAR" runs under 4 from lights out until Race Control
+    says ROLLING START or STANDING START (Belgium 2025: laps 1-4)
     YELLOW / DOUBLE YELLOW in a sector -> 2 until that sector's CLEAR, unless a safety car or red flag covers it
 A lap's status is every code in force during it, each once, in order ("124").
 
@@ -146,6 +148,7 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
     rc = race_control.assign(t_sec=seconds_since(race_control["date"], t0)).sort_values("t_sec", kind="stable")
     neutral: Optional[str] = None             # a safety car, virtual safety car or red flag covers the whole track
     yellow: set = set()                       # sectors under yellow
+    behind_safety_car = False                 # "RACE WILL START BEHIND THE SAFETY CAR" was announced
     changes: List[Tuple[float, str]] = []
     last = None
     for row in rc.itertuples():
@@ -158,6 +161,11 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
             neutral = SC
         elif flag == "RED":
             neutral = RED
+        elif message.startswith("RACE WILL START BEHIND THE SAFETY CAR"):
+            behind_safety_car = True
+        elif message.startswith(("ROLLING START", "STANDING START")):
+            if neutral == SC:                 # the safety car that led the field to the start has gone in
+                neutral = None
         elif message.startswith("TRACK CLEAR"):
             yellow = set()
             if neutral != RED:                # a red flag ends when the race starts again, not when the track is clear
@@ -166,6 +174,9 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
             yellow = set()                    # grid are over (Italy 2025: one never cleared, 30 minutes of false yellow)
             if neutral == RED:
                 neutral = None
+            if behind_safety_car:             # the announced start behind the safety car begins now
+                neutral = SC
+            behind_safety_car = False
         elif flag in ("YELLOW", "DOUBLE YELLOW") and scope == "Sector":
             yellow.add(row.sector)
         elif flag == "CLEAR" and scope == "Sector":
@@ -197,12 +208,12 @@ def lap_status(start: np.ndarray, end: np.ndarray, timeline: pd.DataFrame) -> Li
 
 # --- the pieces of a lap row -----------------------------------------------------------------------------------
 
-def tyres_by_lap(stints: pd.DataFrame, out_laps: pd.DataFrame) -> pd.DataFrame:
+def tyres_by_lap(stints: pd.DataFrame, laps: pd.DataFrame) -> pd.DataFrame:
     """
     One row per (driver_number, lap_number) a stint covers: Compound, TyreLife, FreshTyre, Stint.
 
-    out_laps: (driver_number, lap_number) of every out-lap. Tyres only change in the pit lane, so a new set's first
-    lap is an out-lap. OpenF1 sometimes starts a stint ONE LAP EARLY, on the in-lap (2023's first races; every stint
+    laps: OpenF1's lap table (driver_number, lap_number, is_pit_out_lap). Tyres only change in the pit lane, so a new
+    set's first lap is an out-lap. OpenF1 sometimes starts a stint ONE LAP EARLY, on the in-lap (2023's first races; every stint
     after a red flag on lap 1, Monaco 2024, where the first stint is even left empty, laps 1..0). So a stint that
     starts on a lap that is not an out-lap, while the next lap is one, is moved a lap later, and the stint before it
     is stretched to meet it.
@@ -210,8 +221,17 @@ def tyres_by_lap(stints: pd.DataFrame, out_laps: pd.DataFrame) -> pd.DataFrame:
     A car driven through the pit lane keeps its tyres, yet OpenF1 opens a new stint (Australia 2025, laps 2-4 behind
     the safety car). Such a stint has the same compound and an age that simply carries on; it is the same set, so
     the tyre life and the stint number continue.
+
+    And a stint that starts where the car never left the pit lane cannot be a new set at all: the set before carries
+    on, with its compound (Belgium 2025: OpenF1 has every car on mediums from lap 2; they pitted for them on lap 12).
+    This is only believed where the lap table has both that lap and the one before it: with laps missing (Miami 2025
+    has 56 % of them) a missing out-lap proves nothing, and the stint is taken as OpenF1 gives it. Nor where the car
+    did leave the pit lane since the set before was fitted, only on another lap than the stint says (Miami 2025: out
+    on lap 27, the stint from lap 33): OpenF1 then contradicts itself, and the stint is kept as given.
     """
-    is_out = set(zip(out_laps["driver_number"], out_laps["lap_number"]))
+    known = set(zip(laps["driver_number"], laps["lap_number"]))
+    out = laps["is_pit_out_lap"].fillna(False).astype(bool) if "is_pit_out_lap" in laps else pd.Series(False, index=laps.index)
+    is_out = set(zip(laps.loc[out, "driver_number"], laps.loc[out, "lap_number"]))
     rows = []
     for driver, d in stints.dropna(subset=["lap_start", "lap_end"]).sort_values("stint_number").groupby("driver_number"):
         starts = [int(v) for v in d["lap_start"]]
@@ -220,18 +240,22 @@ def tyres_by_lap(stints: pd.DataFrame, out_laps: pd.DataFrame) -> pd.DataFrame:
         for k, s in enumerate(d.itertuples()):
             first = starts[k] + late[k]
             last = int(s.lap_end) + (late[k + 1] if k + 1 < len(starts) else late[k])
-            age, number = s.tyre_age_at_start, s.stint_number
+            age, number, compound = s.tyre_age_at_start, s.stint_number, s.compound
             if pd.isna(age):
                 life_first = np.nan
             elif before is not None and before[0] == s.compound and before[1] + 1 == age:
                 life_first, number = age, before[2]       # the same set carried on: OpenF1 gives its age ON this lap
+            elif (before is not None and (driver, first) in known and (driver, first - 1) in known
+                  and not any((driver, n) in is_out for n in range(before[3] + 1, first + 1))):
+                compound, number = before[0], before[2]   # no pit passage, so no new tyres: the set before carries on,
+                life_first = before[1] + 1                # whatever the stint says (Belgium 2025: "MEDIUM" from lap 2)
             else:
                 life_first = age + 1                      # a set fitted now: laps done before, so this lap is one more
             for lap in range(first, last + 1):
-                rows.append((driver, lap, s.compound, life_first + lap - first,
+                rows.append((driver, lap, compound, life_first + lap - first,
                              None if pd.isna(age) else bool(life_first == 1), number))
             if last >= first:
-                before = (s.compound, life_first + last - first, number)
+                before = (compound, life_first + last - first, number, first)
     out = pd.DataFrame(rows, columns=["driver_number", "lap_number", "Compound", "TyreLife", "FreshTyre", "Stint"])
     return out.drop_duplicates(["driver_number", "lap_number"], keep="last")      # the later stint wins
 
@@ -290,8 +314,7 @@ def lap_table(tables: Dict[str, pd.DataFrame], t0: pd.Timestamp) -> Tuple[pd.Dat
     df = df.merge(tables["drivers"][["driver_number", "name_acronym", "team_name"]].drop_duplicates("driver_number"),
                   on="driver_number", how="left")
     out_lap = df["is_pit_out_lap"].fillna(False).astype(bool) if "is_pit_out_lap" in df else pd.Series(False, index=df.index)
-    df = df.merge(tyres_by_lap(tables["stints"], df.loc[out_lap, ["driver_number", "lap_number"]]),
-                  on=["driver_number", "lap_number"], how="left")
+    df = df.merge(tyres_by_lap(tables["stints"], laps), on=["driver_number", "lap_number"], how="left")
 
     passages = pit_by_lap(tables.get("pit"), t0)
     df = df.merge(passages.rename(columns={"in_lap": "lap_number"})[["driver_number", "lap_number", "pit_in_sec"]],

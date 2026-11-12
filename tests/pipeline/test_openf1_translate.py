@@ -125,8 +125,10 @@ def stints_of(*rows):
                           "tyre_age_at_start": age} for k, (a, b, c, age) in enumerate(rows)])
 
 
-def out_laps(*laps):
-    return pd.DataFrame({"driver_number": 1, "lap_number": list(laps)})
+def out_laps(*laps, last=80):
+    """A lap table of laps 1..last for car 1, with these laps as out-laps."""
+    return pd.DataFrame({"driver_number": 1, "lap_number": range(1, last + 1),
+                         "is_pit_out_lap": [n in laps for n in range(1, last + 1)]})
 
 
 def tyre(table, lap):
@@ -160,6 +162,27 @@ def test_a_set_carried_through_the_pit_lane_stays_the_same_stint():
                                       (4, 33, "INTERMEDIATE", 4), (34, 45, "MEDIUM", 0)), out_laps(3, 4, 5, 35))
     assert [tyre(tyres, n)[1] for n in (1, 2, 3, 4, 5, 34)] == [1, 2, 3, 4, 5, 34]
     assert {tyre(tyres, n)[2] for n in range(1, 35)} == {1} and tyre(tyres, 35) == ("MEDIUM", 1, 5)
+
+
+def test_without_a_pit_passage_there_are_no_new_tyres_whatever_the_stint_says():
+    """Belgium 2025, PIA: OpenF1 has intermediates on lap 1 only and mediums from lap 2; he pitted on lap 12."""
+    stints = stints_of((1, 1, "INTERMEDIATE", 0), (2, 12, "MEDIUM", 0), (13, 44, "MEDIUM", 0))
+    tyres = tr.tyres_by_lap(stints, out_laps(13, last=44))
+    assert tyre(tyres, 2) == ("INTERMEDIATE", 2, 1) and tyre(tyres, 12) == ("INTERMEDIATE", 12, 1)
+    assert tyre(tyres, 13) == ("MEDIUM", 1, 3)
+    # with laps missing from the lap table the missing out-lap proves nothing: the stint is taken as given
+    holes = out_laps(13, last=44)
+    holes = holes[~holes["lap_number"].isin([1, 2])]
+    assert tyre(tr.tyres_by_lap(stints, holes), 3) == ("MEDIUM", 2, 2)
+
+
+def test_a_start_announced_behind_the_safety_car_runs_under_it_until_the_rolling_start():
+    rc = messages((10.0, "RACE WILL START BEHIND THE SAFETY CAR", None, None, None), START,
+                  (700.0, "ROLLING START", None, None, None))
+    timeline = tr.status_timeline(rc, T0)
+    assert timeline["code"].tolist() == ["1", "4", "1"]
+    zero = 100.0 + tr.LIGHTS_AFTER_MESSAGE_SEC
+    assert timeline["t_sec"].tolist()[1:] == pytest.approx([100.0 - zero, 700.0 - zero])
 
 
 # --- pits, deleted laps, results -------------------------------------------------------------------------------------
