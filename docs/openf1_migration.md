@@ -2,8 +2,8 @@
 
 A developer's guide to how PitwallOS changed its data source. It is written piece by piece as the work is done.
 
-**Status:** the new lake is built and compared (pieces 1 to 3 below). All 70 races of 2023-2025 exist in `data_openf1/` as
-Bronze, Silver and Gold, built from OpenF1 alone. The apps still read the FastF1 lake in `data/` until the swap.
+**Status:** done except the replay. The lake in `data/` is built from OpenF1 alone: 90 races, 2023 to 2026. The FastF1 lake
+it replaced is kept as `data_fastf1/`. New races are downloaded from OpenF1. The replay still reads FastF1 (next piece).
 
 ## Why
 
@@ -34,8 +34,8 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 | 1 | Bronze: OpenF1's tables for a race, as delivered | done |
 | 2 | Translation: OpenF1's tables into the lap table the cleaner reads, on one clock with zero at lights out | done |
 | 3 | Rebuild 70 races, compare with the old lake | done |
-| 4 | Pace models re-scored on the new lake; swap the lakes; test fixtures re-cut | next |
-| 5 | Replay and Analyze from the lake; the 2026 races | planned |
+| 4 | New races from OpenF1; pace models re-scored; the 2026 races; swap the lakes | done |
+| 5 | The replay from the lake | next |
 | 6 | FastF1 removed | planned |
 
 ## Decisions so far
@@ -313,4 +313,71 @@ Every headline of Phase 2 is reproduced to within a few hundredths.
 - Classified positions of retired cars are null (OpenF1 gives none).
 - The two constants (0.173 s, 0.27 s) are measured medians, not physical facts. If OpenF1 changes how it stamps laps they must be
   measured again; the golden test on the official race time would fail first.
-- The pace models (Phase 3) have not yet been re-scored on the new lake.
+- The pace models were re-scored in piece 4.
+
+
+## Piece 4: new races from OpenF1, the 2026 season, and the swap
+
+### New races come from OpenF1
+
+`runner.bronze_step` and `backfill.build_race` now ingest a race with no Bronze through `openf1_bronze.ingest_session`. The
+backfill takes a season's races, and which of them have been run, from OpenF1's calendar (`openf1_bronze.season_calendar`,
+`has_run`). The Analyze window builds a missing race the same way, in about half a minute. A race already in an old FastF1
+Bronze keeps it. Qualifying and sprints still go through FastF1 until they are moved.
+
+### Four more rules, found on races that broke
+
+| Race | What broke | Rule added |
+|---|---|---|
+| Belgium 2025 | The start was behind the safety car (rain); OpenF1 has every car on mediums from lap 2, though they pitted for them on lap 12. Pace-model error 2.16 s, the worst race of 2025 | A start announced "RACE WILL START BEHIND THE SAFETY CAR" runs under 4 until the rolling or standing start. A stint that starts where the car never left the pit lane carries the previous set on |
+| Italy 2026 | A 200.7 s lap after a red flag counted as a clean lap: it held an extra formation lap | After a red flag, if Race Control spoke of the safety car while the race was stopped, the restart runs under 4 until the start message (F1's own feed does the same: Monaco 2024, Mexico 2023, Zandvoort 2023); "EXTRA FORMATION LAP" puts it back. Without any start message (Sao Paulo 2023) it ends after 180 s |
+| Netherlands 2026 | A lap ended 10 ms before it started (OpenF1's laps contradict each other after a 32-minute lap) | A lap whose end would come before its start has no end |
+| Mexico 2026 | The clock was a day off: the race's messages carry a "SESSION STARTED" from the day before | Lights out is looked for no earlier than an hour before the scheduled start |
+
+The tyre rule is limited twice: it is not applied where the lap table has holes (Miami 2025 holds 56 % of the laps), nor where
+the car did leave the pit lane since the previous set was fitted, on another lap than the stint says (Miami 2025: out on lap
+27, the stint from lap 33). There OpenF1 contradicts itself and the stint is kept as given.
+
+After these rules, 48 of 70 races match the FastF1 lake at 99 % or better on every key column (46 before), 53 at 98 %, 61 at
+95 %, and no race is worse on any column except Sao Paulo 2023 and Japan 2024, by about one lap per car: their formation lap
+after the red flag is now marked as safety car, where F1's feed showed green.
+
+### The pace models on the new lake
+
+Fitted on 2023-2024, scored once on 2025, as in Phase 3. Mean error on dry laps, in seconds:
+
+| Model | Next lap, FastF1 lake | Next lap, OpenF1 lake | 10 laps, FastF1 lake | 10 laps, OpenF1 lake |
+|---|---|---|---|---|
+| Persistence | 0.420 | 0.421 | 0.700 | 0.706 |
+| Linear decomposition | 0.398 | 0.400 | 0.644 | 0.652 |
+| State-space | 0.386 | 0.389 | 0.633 | 0.643 |
+| LightGBM corrections | 0.353 | 0.355 | 0.569 | 0.582 |
+
+Each rung still beats the one before it at every horizon (paired bootstrap over races). Before the Belgium fix the boosted
+model scored 0.413: one race with wrong tyres and a wrong start was enough to move a season's headline by 0.06 s.
+
+### 2026
+
+All 20 races run so far were downloaded (about 2.3 minutes each, telemetry included) and built: 20 of 20. The winner's
+rebuilt finish matches the official race time within 0.06 s in 18 of the 19 races where his laps are complete; Austria 2026 is
+0.32 s off, for a reason not found. 2026's telemetry has more source faults than 2023-2025: 11 of 20 races pass every
+quality check. Monaco 2026's car positions stop 45 minutes before the flag. Hungary and China 2026 carry samples from the day
+before; Silver keeps only the samples inside the race's laps, so these do no harm.
+
+The Analyze window opens every 2026 race, including the Italian Grand Prix of the screenshot that started this work.
+
+### The swap
+
+Two folder renames on the same disk, nothing copied or deleted:
+
+    data/          the FastF1 lake  ->  data_fastf1/   (kept, read-only from now on)
+    data_openf1/   the OpenF1 lake  ->  data/          (90 races: 2023-2026)
+
+Both names are ignored by git and refused by the local push guard. The reports in `data/reports/` were all rebuilt on the
+new lake (backfill, the six analytics steps, the 2025 model test, the telemetry quality report), and the README's charts and
+numbers were redrawn from it.
+
+What the swap did NOT change: the test fixtures. `tests/fixtures/lake/` and `lake_hungary/` are FastF1-shaped Bronze. That
+shape is now the cleaner's input contract (the translation produces it), so they still test the cleaner exactly; the
+translation has its own golden race (`tests/fixtures/openf1/qatar_2024/`). Golden numbers measured on FastF1's clock in those
+tests stay as they are.

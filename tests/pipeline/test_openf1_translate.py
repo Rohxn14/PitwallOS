@@ -330,3 +330,4 @@ def test_qatar_builds_silver_and_gold_from_an_openf1_bronze(tmp_path):
     assert lake.results_path(*QATAR, "R", tmp_path).parts[-5] == lake.SILVER        # the classification is in Silver
     overview = race_overview.load_overview(*QATAR, root=str(tmp_path))
     assert overview.classification.iloc[0]["driver_code"] == "VER" and len(overview.stints) > 40
+    assert overview.status.total_laps == 57                                         # from Silver: the manifest has none

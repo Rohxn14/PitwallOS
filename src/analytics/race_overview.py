@@ -85,6 +85,9 @@ def lake_status(year: int, round_number: int, session: str = "R",
         status.country = manifest.get("country")
         status.event_date = str(manifest.get("event_date", ""))[:10] or None
         status.total_laps = manifest.get("total_laps")
+    if status.total_laps is None and status.silver:      # a Bronze from OpenF1 has no race distance: Silver has it
+        written = lake.read_metadata(silver_laps).get("total_laps", "")
+        status.total_laps = int(written) if written.isdigit() else None
     status.sizes_mb = {layer: _folder_mb(lake.session_dir(layer, year, round_number, session, root))
                        for layer in lake.LAYERS}
     return status

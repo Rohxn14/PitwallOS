@@ -1,6 +1,6 @@
 # PitwallOS 🏎️
 
-An end-to-end Formula 1 data project: a data lake of 70 races with telemetry, an analytics engine that measures what
+An end-to-end Formula 1 data project: a data lake of 90 races (2023-2026) with telemetry, built from [OpenF1](https://openf1.org), an analytics engine that measures what
 actually decides a race, and a ladder of pace models. Every number comes with its sample size and uncertainty, and is tested
 against a known fact of a real race.
 
@@ -24,29 +24,29 @@ PitwallOS is built on top of **[F1 Race Replay](https://github.com/IAmTomShaw/f1
 Each phase works on these terms. The analytics measure them from real races, the models learn them, and telemetry explains
 them corner by corner. Every phase is checked by the one after it.
 
-## What 70 races say
+## What 70 races say (2023-2025)
 
-All from 2023-2025: 77,713 laps, 65,698 of them showing true pace. Each analysis started from a written design and a predicted
-number, and ended with tests on real races. The race report checks 686 numbers against ranges written down before measuring,
+All from 2023-2025: 77,373 laps, 65,121 of them showing true pace. Each analysis started from a written design and a predicted
+number, and ended with tests on real races. The race report checks 688 numbers against ranges written down before measuring,
 and none is left unexplained.
 
 **Tyres wear more than lap times show.** A car gets lighter as it burns fuel, which hides most of the wear. Corrected for fuel, a
-soft loses 0.064 s for every lap of tyre age, a medium 0.049 s and a hard 0.044 s.
+soft loses 0.063 s for every lap of tyre age, a medium 0.050 s and a hard 0.044 s.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/tyre_wear-dark.png">
-  <img alt="Tyre wear per race by compound. Median corrected wear: soft +0.064, medium +0.049, hard +0.044 seconds per lap of tyre age; raw medians +0.020, +0.002 and -0.013." src="docs/images/tyre_wear-light.png">
+  <img alt="Tyre wear per race by compound. Median corrected wear: soft +0.063, medium +0.050, hard +0.044 seconds per lap of tyre age; raw medians +0.019, +0.002 and -0.013." src="docs/images/tyre_wear-light.png">
 </picture>
 
-**Following a car is expensive, and it does not stop at the famous 1.5 s.** Within half a second it costs about 0.78 s a lap, and
-cars 2-3 s back still lose 0.09 s. The cost is net: lost downforce and being held up, minus what DRS gives back.
+**Following a car is expensive, and it does not stop at the famous 1.5 s.** Within half a second it costs about 0.77 s a lap, and
+cars 2-3 s back still lose 0.10 s. The cost is net: lost downforce and being held up, minus what DRS gives back.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dirty_air-dark.png">
-  <img alt="Cost of following by gap to the car ahead: +0.775 seconds a lap at 0 to 0.5 s behind, falling steadily to +0.094 at 2 to 3 s behind." src="docs/images/dirty_air-light.png">
+  <img alt="Cost of following by gap to the car ahead: +0.773 seconds a lap at 0 to 0.5 s behind, falling steadily to +0.095 at 2 to 3 s behind." src="docs/images/dirty_air-light.png">
 </picture>
 
-**A pit stop's price depends on the circuit.** A stop under green costs a median of 22.5 s, from 18 s at Spa to 28 s at Imola. A
+**A pit stop's price depends on the circuit.** A stop under green costs a median of 22.2 s, from 18 s at Spa to 28 s at Imola. A
 typical car stands still for 2.7 s of that.
 
 <picture>
@@ -54,11 +54,11 @@ typical car stands still for 2.7 s of that.
   <img alt="Time lost to a green pit stop per circuit, ranked: Imola highest at 28.1 s, Spa lowest at 18.3 s." src="docs/images/pit_loss-light.png">
 </picture>
 
-**An undercut is about the gap, and about how fast the rival answers.** Of 148 real attempts, 45 % worked (95 % interval 37-53 %).
+**An undercut is about the gap, and about how fast the rival answers.** Of 146 real attempts, 45 % worked (95 % interval 37-53 %).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/undercuts-dark.png">
-  <img alt="Undercut success by gap: 76 % under 1 s, 45 % at 1 to 2 s, 23 % at 2 to 3 s. By response: 38 % if the car ahead stops next lap, 50 % two laps later, 70 % three laps later." src="docs/images/undercuts-light.png">
+  <img alt="Undercut success by gap: 76 % under 1 s, 45 % at 1 to 2 s, 25 % at 2 to 3 s. By response: 38 % if the car ahead stops next lap, 50 % two laps later, 68 % three laps later." src="docs/images/undercuts-light.png">
 </picture>
 
 ## Predicting the next lap, and the ten after it
@@ -69,18 +69,18 @@ four existed.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/pace_models-dark.png">
-  <img alt="Mean error by laps ahead on 2025. Next lap: last clean lap 0.42 s, linear terms 0.40, Kalman filter 0.39, LightGBM corrections 0.35. Ten laps: 0.70, 0.64, 0.63, 0.57." src="docs/images/pace_models-light.png">
+  <img alt="Mean error by laps ahead on 2025. Next lap: last clean lap 0.42 s, linear terms 0.40, Kalman filter 0.39, LightGBM corrections 0.36. Ten laps: 0.71, 0.65, 0.64, 0.58." src="docs/images/pace_models-light.png">
 </picture>
 
 | Model | What it predicts with | Next lap | 10 laps ahead |
 |---|---|---|---|
-| Persistence | the driver's last clean lap | 0.420 s | 0.700 s |
-| Linear decomposition | base pace + tyre, fuel and traffic terms fitted on other races | 0.398 s | 0.644 s |
-| State-space | the same, with the base pace followed by a Kalman filter | 0.386 s | 0.633 s |
-| LightGBM corrections | the state-space model + boosted trees that learn its errors | **0.353 s** | **0.569 s** |
+| Persistence | the driver's last clean lap | 0.421 s | 0.706 s |
+| Linear decomposition | base pace + tyre, fuel and traffic terms fitted on other races | 0.400 s | 0.652 s |
+| State-space | the same, with the base pace followed by a Kalman filter | 0.389 s | 0.643 s |
+| LightGBM corrections | the state-space model + boosted trees that learn its errors | **0.355 s** | **0.582 s** |
 
-For scale: two clean laps in a row differ by 0.365 s on average, and even a guess that sees the laps on both sides of a lap misses it
-by 0.26 s. What is left is mostly rare big misses (traffic, battles, restarts).
+For scale: two clean laps in a row by the same driver differ by about 0.38 s on average in 2025. What is left is mostly rare big
+misses (traffic, battles, restarts).
 
 ## How it is built
 
@@ -94,9 +94,15 @@ by 0.26 s. What is left is mostly rare big misses (traffic, battles, restarts).
 
 Every table is checked against a data contract before it is written, and every dropped row is counted.
 
-**Telemetry** covers all 70 races: 1,388 car-races and 74 million samples. Each race gets a quality report covering data holes, lap
-length, speed against position and the finish line's place on the map. 63 races pass every check, and the other 7 are source faults such
-as feed outages or one car's speed sensor ([guide](docs/phase5_step0_telemetry.md)).
+**Telemetry** covers all 90 races: 1,789 car-races and 97 million samples. Each race gets a quality report covering data holes, lap
+length, speed against position and the finish line's place on the map. 74 races pass every check. The others are source faults, such as
+feed outages or one car's speed sensor, and 2026 has more of them (Monaco 2026's car positions stop 45 minutes before the flag)
+([guide](docs/phase5_step0_telemetry.md)).
+
+**Where the data comes from.** Everything comes from [OpenF1](https://openf1.org), free from 2023, no login. Until October 2026 the lap
+data came from FastF1, which F1's archive now refuses without a paid login. The move is documented step by step in
+[docs/openf1_migration.md](docs/openf1_migration.md): the lake was rebuilt from OpenF1 beside the old one and compared race by race;
+every analytics headline and every model score above was reproduced on it.
 
 ### The Analyze window
 
@@ -132,12 +138,11 @@ python -m pytest            # run the test suite, needs no data
 python main.py              # pick a race, then Replay or Analyze
 ```
 
-The lake is not in the repository: you build it. **Since October 2026 F1's timing archive needs a login.** FastF1 3.9+ can use an F1 TV
-Access subscription (see [its documentation](https://docs.fastf1.dev)); without one, FastF1 still serves 2021-2022 from its mirror and anything already
-in your local cache. [OpenF1](https://openf1.org)'s telemetry is free from 2023 on.
+The lake is not in the repository: you build it from [OpenF1](https://openf1.org) (free, no login, races from 2023 on; about 3 minutes
+a race with telemetry at OpenF1's free request rate).
 
 ```bash
-python -m src.pipeline.runner --year 2024 --round 12                  # one race: laps, then OpenF1's telemetry
+python -m src.pipeline.runner --year 2024 --round 12                  # one race, from OpenF1
 python -m src.pipeline.runner --year 2024 --round 12 --no-telemetry   # laps only
 python -m src.pipeline.backfill --season 2024                         # a whole season; resumes where it stopped
 python -m src.analytics.report --season 2023 2024 2025                # every analytics number, checked
@@ -150,8 +155,9 @@ python -m docs.make_figures                                           # this pag
 The replay comes from F1 Race Replay (Tom Shaw and its contributors), with a few fixes (an accurate leaderboard at the end of a race,
 rewind-safe insight windows).
 
-**Current limit:** it reads FastF1 directly, so since October 2026 it opens only sessions already in your local FastF1 cache, or with an F1 TV
-login. For any other session it says so. Rebuilding it on the lake's own telemetry, which would bring back all 70 races, is planned.
+**Current limit:** the replay still reads FastF1 directly, so since October 2026 it opens only sessions already in your local FastF1
+cache, or with an F1 TV login. For any other session it says so. Moving it onto the lake, which holds telemetry for all 90 races, is the
+next step of the move to OpenF1.
 
 **Features**
 
@@ -209,8 +215,9 @@ docs/                    developer's guides, a catalogue of F1 strategies, this 
 - **[Tom Shaw](https://tomshaw.dev)** created [F1 Race Replay](https://github.com/IAmTomShaw/f1-race-replay), the replay, track map, insights menu and
   telemetry stream this project is built on. Its contributors are listed in [contributors.md](./contributors.md), and its roadmap is kept in
   [docs/upstream_roadmap.md](./docs/upstream_roadmap.md).
-- **[FastF1](https://github.com/theOehrly/Fast-F1)** makes F1's timing data accessible.
-- **[OpenF1](https://openf1.org)** provides the telemetry, under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The charts on this page and the
+- **[FastF1](https://github.com/theOehrly/Fast-F1)** made F1's timing data accessible, and supplied this project's lap data until October 2026;
+  the replay still uses it for sessions in its cache.
+- **[OpenF1](https://openf1.org)** provides all the data (laps, pit stops, Race Control, results, telemetry), under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The charts on this page and the
   test fixtures in `tests/fixtures/openf1/` are derived from it and shared under the same licence, for non-commercial use.
 
 ## License
