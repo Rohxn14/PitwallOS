@@ -147,10 +147,11 @@ def drivers_of(year: int, round_number: int, session: str = "R", root: str = lak
     return sorted({int(d) for d in laps["DriverNumber"].dropna()})
 
 
-def download(fetch: Fetch, session_key: int, drivers: Sequence[int],
-             workers: int = WORKERS) -> Tuple[Dict[str, pd.DataFrame], Dict[str, List[int]]]:
-    """Every driver's car data and location + the lap table, as delivered. Each answer becomes a table in its worker
-    (a race is ~1.4 million rows: kept as Python dicts it would take a gigabyte). Raises if any request fails."""
+def download_per_driver(fetch: Fetch, session_key: int, drivers: Sequence[int],
+                        workers: int = WORKERS) -> Tuple[Dict[str, pd.DataFrame], Dict[str, List[int]]]:
+    """Every driver's car data and location, as delivered: ({table: rows}, {endpoint: drivers OpenF1 has nothing for}).
+    Each answer becomes a table in its worker (a race is ~1.4 million rows: kept as Python dicts it would take a
+    gigabyte). Raises if any request fails."""
     jobs = [(endpoint, table, int(d)) for d in drivers for endpoint, table in PER_DRIVER]
 
     def one(job: Tuple[str, str, int]) -> pd.DataFrame:
@@ -166,6 +167,13 @@ def download(fetch: Fetch, session_key: int, drivers: Sequence[int],
         missing[endpoint] = [d for d, f in parts if f.empty]
         tables[table] = pd.concat([f for _, f in parts if not f.empty], ignore_index=True) if any(
             not f.empty for _, f in parts) else pd.DataFrame()
+    return tables, missing
+
+
+def download(fetch: Fetch, session_key: int, drivers: Sequence[int],
+             workers: int = WORKERS) -> Tuple[Dict[str, pd.DataFrame], Dict[str, List[int]]]:
+    """Every driver's car data and location + the lap table, as delivered. Raises if any request fails."""
+    tables, missing = download_per_driver(fetch, session_key, drivers, workers)
     tables[LAPS_TABLE] = pd.DataFrame(fetch("laps", {"session_key": int(session_key)}))
     return tables, missing
 

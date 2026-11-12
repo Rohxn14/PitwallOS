@@ -26,6 +26,9 @@ still_frame.png
 
 # PitwallOS data lake (rebuildable, large)
 data/
+# The same lake during the move from FastF1 to OpenF1: the new one being built, the old one kept
+data_openf1/
+data_fastf1/
 # The pipeline's old separate FastF1 cache, no longer written (kept ignored in case one is left over)
 f1_cache/
 

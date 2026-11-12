@@ -18,6 +18,10 @@ Layout (one folder per session, same shape in every layer):
       reports/
           backfill_2024.csv       one row per race: status, error, every quality count
 
+A Bronze built from OpenF1 alone (src/pipeline/openf1_bronze.py; manifest "source": "openf1") holds OpenF1's
+tables as delivered instead, one per endpoint, named openf1_<endpoint>: openf1_laps, openf1_stints, openf1_pit,
+openf1_race_control, openf1_car_data, ... (openf1_table()).
+
 Bronze telemetry (car_telemetry, pos_telemetry) is optional: a race ingested
 laps only has no telemetry files, and its manifest says "telemetry": false.
 Since F1 locked its timing archive (October 2026) telemetry can also come from
@@ -48,7 +52,7 @@ MANIFEST_NAME = "_manifest.json"
 GOLD_TABLE = "lap_features"
 BRONZE_TELEMETRY_TABLES = ("car_telemetry", "pos_telemetry")
 BRONZE_OPENF1_TABLES = ("openf1_car_data", "openf1_location", "openf1_laps")   # the same feed, from OpenF1
-FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from
+FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from (and, as the manifest's "source", its Bronze)
 BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
 REPORTS_DIR = "reports"
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
@@ -70,6 +74,11 @@ def table_path(layer: str, table: str, year: int, round_number: int, session: st
                root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
     """Full path of one Parquet table."""
     return session_dir(layer, year, round_number, session, root) / f"{table}.parquet"
+
+
+def openf1_table(endpoint: str) -> str:
+    """Bronze's table for one OpenF1 endpoint, as delivered: 'race_control' -> 'openf1_race_control'."""
+    return f"{OPENF1}_{endpoint}"
 
 
 def gold_features_path(year: int, round_number: int, session: str = "R",
