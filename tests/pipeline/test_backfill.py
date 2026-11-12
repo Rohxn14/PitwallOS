@@ -3,13 +3,13 @@ backfill.py: many races into the lake, without the network.
 
 The golden lake holds real Bronze for the 2024 British GP (round 12) and Qatar GP (round 23),
 so a backfill over those rounds rebuilds them offline. Any other round has no Bronze: there the
-download is faked, to fail, so retries and failure isolation can be tested.
+download (from OpenF1) is faked, to fail, so retries and failure isolation can be tested.
 """
 
 import pandas as pd
 import pytest
 
-from src.pipeline import backfill, contracts, extractor, lake, openf1
+from src.pipeline import backfill, contracts, extractor, lake, openf1, openf1_bronze
 from src.pipeline.backfill import FAILED, OK, RetryPolicy
 
 BRITISH, QATAR = 12, 23
@@ -21,7 +21,7 @@ def downloads(monkeypatch):
     """Every download attempt (by round). Each one fails: tests never touch the network."""
     calls = []
 
-    def fake_extract(year, round_number, session, root, telemetry=True):
+    def fake_ingest(year, round_number, session, root, telemetry=True):
         calls.append(round_number)
         raise ConnectionError("no network in tests")
 
@@ -29,7 +29,11 @@ def downloads(monkeypatch):
         calls.append(("openf1", round_number))
         raise ConnectionError("no network in tests")
 
-    monkeypatch.setattr(extractor, "extract_session", fake_extract)
+    def no_fastf1(*args, **kwargs):
+        raise AssertionError("a race is never downloaded through FastF1 any more")
+
+    monkeypatch.setattr(openf1_bronze, "ingest_session", fake_ingest)
+    monkeypatch.setattr(extractor, "extract_session", no_fastf1)
     monkeypatch.setattr(openf1, "add_telemetry", fake_openf1)
     return calls
 
@@ -161,20 +165,20 @@ def test_a_failing_race_does_not_stop_the_others(golden_lake, downloads):
     assert downloads == [1, 1, 1] and waits == [1.0, 2.0]    # first try + one retry per wait
 
 
-def test_fastf1_rate_limit_gets_the_long_wait(golden_lake, monkeypatch):
-    calls = []
+def test_fastf1_rate_limit_gets_the_long_wait():
+    """Still used for F1's pit-stop record of an old FastF1 Bronze (extractor.add_pit_stops)."""
+    calls, waits = [], []
 
-    def fake_extract(year, round_number, session, root, telemetry=True):
-        calls.append(round_number)
+    def download():
+        calls.append(1)
         if len(calls) <= 2:
             raise extractor.ExtractionError("FastF1 could not load part of 2024 round 1 'R': Failed to load "
                                             "weather data! (RateLimitExceededError: any API: 500 calls/h)")
         raise ConnectionError("down")
 
-    monkeypatch.setattr(extractor, "extract_session", fake_extract)
-    report, waits = run(golden_lake, [1])
+    with pytest.raises(ConnectionError, match="down"):
+        backfill.with_retry(download, 1, policy=QUICK, sleep=waits.append, say=lambda text: None)
     assert waits == [50.0, 50.0, 1.0, 2.0]                   # two long waits, then the ordinary ones
-    assert report.loc[1, "error"] == "ConnectionError: down"
 
 
 def test_a_contract_failure_is_reported_at_its_stage_and_never_retried(golden_lake, downloads, monkeypatch):
@@ -220,25 +224,23 @@ def test_command_line_exit_code_says_whether_every_race_succeeded(golden_lake, d
 # --- which races ----------------------------------------------------------------------
 
 def test_only_races_that_have_been_run_are_built(monkeypatch):
-    bahrain = pd.Timestamp("2024-03-02 15:00", tz="UTC")
-    monkeypatch.setattr(extractor, "race_rounds", lambda season: [
-        {"round": 1, "event_name": "Bahrain Grand Prix", "race_start_utc": bahrain},
-        {"round": 2, "event_name": "Saudi Arabian Grand Prix", "race_start_utc": bahrain + pd.Timedelta(days=7)},
-        {"round": 3, "event_name": "No race session", "race_start_utc": None},
-    ])
+    """The season's races come from OpenF1's calendar (the real 2023 one, as in test_openf1_bronze)."""
+    from tests.pipeline.test_openf1_bronze import FakeOpenF1
+    monkeypatch.setattr(openf1, "http_fetch", lambda: FakeOpenF1())
+    monaco_end = pd.Timestamp("2023-05-28T15:00:00+00:00")
+    run_now, not_yet = backfill.races_to_run(2023, now=monaco_end + pd.Timedelta(hours=7))
+    assert [r["round"] for r in run_now] == [1, 2, 3, 4, 5, 6] and len(not_yet) == 16   # Imola was cancelled
+    assert run_now[5]["event_name"] == "Monaco Grand Prix"
 
-    run_now, not_yet = backfill.races_to_run(2024, now=bahrain + pd.Timedelta(days=1))
-    assert [r["round"] for r in run_now] == [1] and [r["round"] for r in not_yet] == [2, 3]
-
-    # The flag fell an hour ago: the timing data may not be published yet.
-    run_now, _ = backfill.races_to_run(2024, now=bahrain + pd.Timedelta(hours=3))
-    assert run_now == []
+    # The flag fell two hours ago: the data may not be published yet.
+    run_now, _ = backfill.races_to_run(2023, now=monaco_end + pd.Timedelta(hours=2))
+    assert [r["round"] for r in run_now] == [1, 2, 3, 4, 5]
 
 
 def test_explicit_rounds_skip_the_schedule(monkeypatch):
-    def no_schedule(season):
+    def no_schedule(*args):
         raise AssertionError("the schedule must not be read")
 
-    monkeypatch.setattr(extractor, "race_rounds", no_schedule)
+    monkeypatch.setattr(openf1_bronze, "season_calendar", no_schedule)
     run_now, not_yet = backfill.races_to_run(2024, rounds=[5, 6])
     assert [r["round"] for r in run_now] == [5, 6] and not_yet == []

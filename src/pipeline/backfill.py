@@ -5,12 +5,13 @@ Phase 1 backfill: many races into the lake with one command (src/pipeline/backfi
     python -m src.pipeline.backfill --season 2022 2023 2024 2025
     python -m src.pipeline.backfill --season 2024 --rounds 12 23    # only these rounds
     python -m src.pipeline.backfill --season 2024 --rebuild         # redo Silver + Gold from Bronze (offline)
-    python -m src.pipeline.backfill --season 2024 --telemetry       # also telemetry: from OpenF1 for a race whose
-                                                                    # Bronze has its laps (~2 min, ~8 MB a race)
+    python -m src.pipeline.backfill --season 2024 --telemetry       # also telemetry (~2 min, ~8 MB a race)
     python -m src.pipeline.backfill --season 2024 --pit-stops       # add F1's pit-stop record to older Bronze
 
 The same Bronze -> Silver -> Gold steps as runner.py, in a loop, with four properties that a
-single run does not need:
+single run does not need. A race not yet in Bronze comes from OpenF1 alone (openf1_bronze.py); the season's
+races, and which of them have been run, come from OpenF1's calendar.
+
 
   Resumable  A race whose Gold exists is skipped. A race whose Bronze exists is rebuilt from it
              without downloading. Stopping (Ctrl+C, a crash, a lost connection) and running the
@@ -18,8 +19,8 @@ single run does not need:
   Isolated   One race failing never stops the others. It is reported with the stage that failed
              (bronze / silver / gold) and the error, and is tried again on the next run.
   Retried    Only the download is retried: a contract failure is deterministic, retrying it would
-             fail the same way. FastF1 caps itself at 500 requests per hour and raises when the
-             cap is hit; that gets a long wait instead of a short one.
+             fail the same way. FastF1 (still used for F1's pit-stop record of an old Bronze) caps itself
+             at 500 requests per hour and raises when the cap is hit; that gets a long wait instead.
   Reported   data/reports/backfill_<season>.csv, one row per race: what happened in the latest
              run, and every quality count (quality.py). Rewritten after each race, so an
              interrupted run still leaves a report. Races not in this run keep their row.
@@ -39,7 +40,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from src.pipeline import extractor, lake, openf1, quality
+from src.pipeline import extractor, lake, openf1, openf1_bronze, quality
 from src.pipeline.cleaner import build_silver
 from src.pipeline.feature_store import build_gold
 
@@ -58,7 +59,8 @@ RACE_DATA_DELAY = pd.Timedelta(hours=6)
 
 OK, FAILED = "ok", "failed"
 # Where a race's Bronze came from in this run.
-FROM_FASTF1 = "fastf1"      # extracted now (FastF1's cache if it had it, else downloaded)
+FROM_FASTF1 = "fastf1"      # extracted now (FastF1's cache if it had it, else downloaded): no longer for a race
+FROM_OPENF1 = "openf1"      # downloaded now from OpenF1 (only what Bronze lacked)
 FROM_BRONZE = "bronze"      # Bronze already in the lake: Silver + Gold rebuilt from it, offline
 ADDED_PIT_STOPS = "bronze+stops"   # Bronze in the lake; F1's pit-stop record downloaded; Silver + Gold rebuilt
 ADDED_OPENF1 = "bronze+openf1"    # Bronze laps in the lake; telemetry downloaded from OpenF1; Silver + Gold rebuilt
@@ -155,15 +157,17 @@ def build_race(year: int, round_number: int, *, root: str = lake.DEFAULT_LAKE_RO
                     row["source"] = ADDED_PIT_STOPS
                     with_retry(lambda: extractor.add_pit_stops(year, round_number, SESSION, root), round_number,
                                policy=policy, sleep=sleep)
+            elif (not lake.has_bronze(year, round_number, SESSION, root)
+                  or lake.read_manifest(year, round_number, SESSION, root).get("source") == lake.OPENF1):
+                row["source"] = FROM_OPENF1
+                with_retry(lambda: openf1_bronze.ingest_session(year, round_number, SESSION, root, telemetry=telemetry),
+                           round_number, policy=policy, sleep=sleep)
             elif telemetry and lake.has_bronze(year, round_number, SESSION, root):
                 # F1's archive needs a login since October 2026, so FastF1 cannot fetch the telemetry any more:
                 # OpenF1's copy of the same feed is added to the Bronze we have.
                 row["source"] = ADDED_OPENF1
                 with_retry(lambda: openf1.add_telemetry(year, round_number, SESSION, root), round_number,
                            policy=policy, sleep=sleep)
-            else:
-                row["source"] = FROM_FASTF1
-                extract_with_retry(year, round_number, root=root, telemetry=telemetry, policy=policy, sleep=sleep)
             stage = "silver"
             build_silver(year, round_number, SESSION, root, telemetry=telemetry)
             stage = "gold"
@@ -189,15 +193,14 @@ def races_to_run(season: int, rounds: Optional[Sequence[int]] = None,
     (races to build, races left out because they have not been run yet).
 
     With explicit `rounds` the schedule is not read at all (works offline). Otherwise every race
-    of the season from FastF1's schedule whose data should be published by `now`.
+    of the season from OpenF1's calendar whose data should be published by `now`.
     """
     if rounds:
         return [{"round": int(r), "event_name": None} for r in rounds], []
-    now = now if now is not None else pd.Timestamp.now(tz="UTC")
     run, not_yet = [], []
-    for race in extractor.race_rounds(season):
-        started = race["race_start_utc"]
-        (run if started is not None and started + RACE_DATA_DELAY <= now else not_yet).append(race)
+    for _, race in openf1_bronze.season_calendar(openf1.http_fetch(), season).iterrows():
+        row = {"round": int(race["round"]), "event_name": race["event_name"]}
+        (run if openf1_bronze.has_run(race, now) else not_yet).append(row)
     return run, not_yet
 
 

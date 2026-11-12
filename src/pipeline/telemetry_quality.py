@@ -158,9 +158,10 @@ def race_quality(year: int, round_number: int, session: str = "R", root: str = l
     source = lake.bronze_telemetry_source(year, round_number, session, root)
     row: Dict[str, Any] = {"season": int(year), "round": int(round_number), "event_name": manifest.get("event_name"),
                            "location": manifest.get("location"), "source": source}
-    if source == lake.OPENF1:
+    openf1_only = manifest.get("source") == lake.OPENF1       # Bronze built from OpenF1 alone: laps and telemetry share
+    if source == lake.OPENF1:                                 # one clock (openf1_translate), there is nothing to line up
         row["openf1_session_key"] = manifest[lake.OPENF1]["session_key"]
-        row.update(openf1_clock(year, round_number, session, root))
+        row.update({"clock_method": "session started"} if openf1_only else openf1_clock(year, round_number, session, root))
 
     tel = lake.read_table(lake.table_path(lake.SILVER, "telemetry", year, round_number, session, root))
     laps = lake.read_table(lake.table_path(lake.SILVER, "laps", year, round_number, session, root))
@@ -187,9 +188,12 @@ def race_quality(year: int, round_number: int, session: str = "R", root: str = l
                off_length_share=float(off.mean()) if len(full) else np.nan,
                speed_to_position=float((full["length_m"] / full["path_m"]).median()) if len(full) else np.nan)
 
-    bronze_laps = lake.read_table(lake.table_path(lake.BRONZE, "laps", year, round_number, session, root),
-                                  columns=["DriverNumber", "LapNumber", "Time", "SpeedFL"])
-    diff = line_speeds(tel, bronze_laps)
+    if openf1_only:                       # OpenF1 has no speed at the line: the check cannot be made, and says so (0 laps)
+        diff = pd.Series(dtype=float)
+    else:
+        bronze_laps = lake.read_table(lake.table_path(lake.BRONZE, "laps", year, round_number, session, root),
+                                      columns=["DriverNumber", "LapNumber", "Time", "SpeedFL"])
+        diff = line_speeds(tel, bronze_laps)
     row.update(line_speed_laps=int(len(diff)),
                line_speed_offset_kmh=float(diff.median()) if len(diff) else np.nan,
                line_speed_iqr_kmh=float(diff.quantile(0.75) - diff.quantile(0.25)) if len(diff) else np.nan)
@@ -216,7 +220,7 @@ def problems(row: Dict[str, Any]) -> List[str]:
     low, high = SPEED_POSITION_BAND
     if not low <= row["speed_to_position"] <= high:
         out.append(f"speed and position disagree ({row['speed_to_position']:.3f})")
-    if not row["line_speed_iqr_kmh"] <= MAX_LINE_SPEED_IQR_KMH:
+    if row.get("line_speed_laps", 1) > 0 and not row["line_speed_iqr_kmh"] <= MAX_LINE_SPEED_IQR_KMH:
         out.append(f"line speed unsteady (IQR {row['line_speed_iqr_kmh']:.1f} km/h)")
     return out
 

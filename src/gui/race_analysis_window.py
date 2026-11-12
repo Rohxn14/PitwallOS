@@ -6,8 +6,7 @@ and no telemetry stream, which is why it is not in the insights menu (those wind
 by a running replay).
 
 If the race is not in the lake yet, the window builds it first (Bronze -> Silver -> Gold, laps
-only). FastF1 reads from the same download cache as the replay, so a race that was replayed
-before is built without downloading anything.
+only), from OpenF1's tables (src/pipeline/openf1_bronze.py): about half a minute for the small tables.
 
 The tabs show what the lake holds as facts (src/analytics/race_overview.py) and each Phase 2 step
 once it is built and golden-tested: the Pace tab is step 1 (src/analytics/laps.py and
@@ -295,8 +294,8 @@ class RaceAnalysisWindow(QMainWindow):
         self.stack.addWidget(self.tabs)
         outer.addWidget(self.stack, 1)
 
-        foot = QLabel("Read from the data lake (data/). No replay needed. FastF1 downloads are shared with the replay "
-                      "(.fastf1-cache/).")
+        foot = QLabel("Read from the data lake (data/). No replay needed. A race not in the lake yet is downloaded "
+                      "from OpenF1 (openf1.org, free from 2023).")
         foot.setStyleSheet(f"color: {DIM}; font-size: 11px;")
         outer.addWidget(foot)
 
@@ -444,9 +443,8 @@ class RaceAnalysisWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(0)
         self.wait_title.setText(f"Building {self.event_name} {self.year} into the data lake")
-        self.wait_text.setText("Bronze (raw FastF1 tables) → Silver (cleaned, flagged laps) → Gold (lap features).\n"
-                               "Reads FastF1's shared download cache first; a race never downloaded before takes a "
-                               "few minutes.")
+        self.wait_text.setText("Bronze (OpenF1's tables, as delivered) → Silver (cleaned, flagged laps) → Gold (lap "
+                               "features).\nA race never downloaded before takes about half a minute.")
         self.wait_text.setStyleSheet(f"color: {DIM};")
         self.wait_progress.setVisible(True)
         self.retry_btn.setVisible(False)
@@ -595,7 +593,7 @@ class RaceAnalysisWindow(QMainWindow):
             ("Pass-throughs", f"{q['pass_throughs']}", "pit lane without new tyres (SC, penalties)"),
             ("Ended in the pits", f"{q['ended_in_pits']}", f"unknown passages: {q['unknown_passages']}"),
             ("Pit laps", f"{q['pit_laps']:,}", "in-laps + out-laps"),
-            ("Not accurate", f"{q['inaccurate']:,}", "FastF1 IsAccurate = False"),
+            ("Not accurate", f"{q['inaccurate']:,}", "no lap time, or sectors that do not add up"),
             ("Deleted", f"{q['deleted_laps']}", "track limits (own flag)"),
             ("No lap time", f"{q['no_lap_time']}", "kept, never invented"),
             ("Lake size", f"{sum(ov.status.sizes_mb.values()):.1f} MB",

@@ -2,8 +2,8 @@
 runner.py: one race end to end, offline from the golden lake's laps-only Bronze; and what it downloads.
 
 Nothing here touches the network: the two download calls are replaced by fakes that record what they were asked.
-A race takes laps from FastF1 and telemetry from OpenF1 (F1's archive needs a login); what Bronze has is never
-downloaded again.
+A race comes from OpenF1 alone (F1's archive needs a login); a race already in a FastF1 Bronze keeps it and gains
+only OpenF1's telemetry; what Bronze has is never downloaded again.
 """
 
 import shutil
@@ -13,6 +13,7 @@ import pytest
 from src.pipeline import lake, runner
 from src.pipeline.runner import bronze_step, run_pipeline
 from tests.conftest import FIXTURE_LAKE
+from tests.pipeline.test_openf1_translate import QATAR_FIXTURE as QATAR_OPENF1
 
 BRITISH = (2024, 12)
 
@@ -39,20 +40,34 @@ def downloads(monkeypatch):
         shutil.copytree(FIXTURE_LAKE / relative, lake.session_dir(lake.BRONZE, year, round_number, session, root))
         return {"status": "ok", "fastf1_warnings": ["a warning"]}
 
+    def fake_ingest(year, round_number, session, root, telemetry=True):
+        calls.append(("openf1 bronze", telemetry))
+        bronze = lake.session_dir(lake.BRONZE, year, round_number, session, root)
+        if not bronze.exists():
+            shutil.copytree(QATAR_OPENF1, bronze)              # a real Bronze from OpenF1 (small tables only)
+        return {"status": "ingested"}
+
     monkeypatch.setattr(runner, "extract_session", fake_extract)
     monkeypatch.setattr(runner.openf1, "add_telemetry", lambda *a, **k: calls.append(("openf1", a[:3])))
+    monkeypatch.setattr(runner.openf1_bronze, "ingest_session", fake_ingest)
     return calls
 
 
-def test_a_new_race_takes_laps_from_fastf1_and_telemetry_from_openf1(tmp_path, downloads):
-    summary = bronze_step(*BRITISH, "R", str(tmp_path), skip_extract=False, telemetry=True)
-    assert downloads == [("fastf1", False), ("openf1", (2024, 12, "R"))]
-    assert summary["status"] == "ok" and summary["fastf1_warnings"] == ["a warning"]
+def test_a_new_race_comes_from_openf1_alone(tmp_path, downloads):
+    summary = bronze_step(2024, 23, "R", str(tmp_path), skip_extract=False, telemetry=False)
+    assert downloads == [("openf1 bronze", False)]
+    assert summary["status"] == "ingested" and summary["lap_rows"] == 944 and summary["event_name"] == "Qatar Grand Prix"
 
 
-def test_a_new_race_laps_only_never_asks_openf1(tmp_path, downloads):
-    bronze_step(*BRITISH, "R", str(tmp_path), skip_extract=False, telemetry=False)
-    assert downloads == [("fastf1", False)]
+def test_an_openf1_bronze_is_asked_again_and_fetches_only_what_it_lacks(tmp_path, downloads):
+    bronze_step(2024, 23, "R", str(tmp_path), skip_extract=False, telemetry=False)
+    bronze_step(2024, 23, "R", str(tmp_path), skip_extract=False, telemetry=True)
+    assert downloads == [("openf1 bronze", False), ("openf1 bronze", True)]   # ingest_session decides what is missing
+
+
+def test_a_new_race_end_to_end_from_openf1(tmp_path, downloads):
+    result = run_pipeline(2024, 23, lake_root=str(tmp_path), telemetry=False)
+    assert result["gold"]["feature_rows"] > 900 and result["silver"]["lap_report"]["clock_method"] == "session started"
 
 
 def test_a_race_in_bronze_is_not_downloaded_again(golden_lake, downloads):
