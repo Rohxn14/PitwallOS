@@ -59,6 +59,14 @@ def test_time_zero_is_the_first_session_started_message_plus_the_measured_delay(
     assert t0 == T0 and report["clock_method"] == "session started" and report["clock_lap1_gap_sec"] == 2400.0
 
 
+def test_a_session_started_from_another_session_is_ignored():
+    """Mexico 2026: the race's messages include a SESSION STARTED from the day before."""
+    rc = messages((100.0 - 86400.0, tr.SESSION_STARTED, None, None, None), START)
+    scheduled = pd.Timestamp(DAY + "16:00:00")
+    assert tr.lights_out(rc, laps_of(1, [100.0], [95.0]), scheduled)[0] == T0
+    assert tr.lights_out(rc, laps_of(1, [100.0], [95.0]))[0] < T0 - pd.Timedelta(hours=23)     # without the schedule
+
+
 def test_without_the_message_lap_one_votes_and_without_both_there_is_no_clock():
     laps = pd.concat([laps_of(1, [100.0], [95.0]), laps_of(2, [100.0], [96.0]), laps_of(3, [1700.0], [97.0])])
     t0, report = tr.lights_out(messages((50.0, "DRS ENABLED", None, None, None)), laps)
@@ -183,6 +191,32 @@ def test_a_start_announced_behind_the_safety_car_runs_under_it_until_the_rolling
     assert timeline["code"].tolist() == ["1", "4", "1"]
     zero = 100.0 + tr.LIGHTS_AFTER_MESSAGE_SEC
     assert timeline["t_sec"].tolist()[1:] == pytest.approx([100.0 - zero, 700.0 - zero])
+
+
+def test_a_red_flag_restart_runs_under_the_safety_car_only_if_race_control_spoke_of_it():
+    zero = 100.0 + tr.LIGHTS_AFTER_MESSAGE_SEC
+    stopped = [START, (900.0, "RED FLAG", "RED", "Track", None), (1500.0, "TRACK CLEAR", "CLEAR", "Track", None)]
+    with_sc = messages(*stopped, (1800.0, "ALL CARS MAY OVERTAKE THE SAFETY CAR", None, None, None),
+                       (2500.0, tr.SESSION_STARTED, None, None, None), (2560.0, "STANDING START", None, None, None),
+                       (2700.0, "EXTRA FORMATION LAP", None, None, None), (2750.0, "STANDING START", None, None, None))
+    assert tr.status_timeline(with_sc, T0)["code"].tolist() == ["1", "5", "4", "1", "4", "1"]
+    no_start_message = messages(*stopped, (1800.0, "ALL CARS MAY OVERTAKE THE SAFETY CAR", None, None, None),
+                                (2500.0, tr.SESSION_STARTED, None, None, None))           # Sao Paulo 2023
+    timeline = tr.status_timeline(no_start_message, T0)
+    assert timeline["code"].tolist() == ["1", "5", "4", "1"]
+    assert timeline["t_sec"].iloc[-1] == pytest.approx(2500.0 - zero + tr.RESTART_SC_MAX_SEC)
+    rolling = messages(*stopped, (2500.0, tr.SESSION_STARTED, None, None, None), (2540.0, "ROLLING START", None, None, None))
+    timeline = tr.status_timeline(rolling, T0)
+    assert timeline["code"].tolist() == ["1", "5", "1"] and timeline["t_sec"].iloc[-1] == pytest.approx(2500.0 - zero)
+
+
+def test_a_lap_that_would_end_before_it_starts_has_no_end():
+    """Netherlands 2026, LIN: a 32-minute lap, a lap without a time, then a lap stamped 10 ms too early."""
+    lag, zero = tr.LATER_LAP_LAG_SEC, 100.0 + tr.LIGHTS_AFTER_MESSAGE_SEC
+    times = tr.lap_times(laps_of(43, [100.0, zero + 95 + lag, zero + 1000 + lag - 0.01], [95.0, 905.0, 90.0]), T0)
+    times = tr.lap_times(laps_of(43, [100.0, zero + 95 + lag, None, zero + 1000 + lag - 0.01],
+                                 [95.0, 905.0, None, 90.0]), T0)
+    assert np.isnan(times["end_sec"].iloc[2]) and times["end_sec"].iloc[1] == pytest.approx(1000.0)
 
 
 # --- pits, deleted laps, results -------------------------------------------------------------------------------------

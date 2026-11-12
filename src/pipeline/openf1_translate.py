@@ -28,7 +28,10 @@ TRACK STATUS. OpenF1 has no status feed. It is rebuilt from Race Control's messa
     SAFETY CAR DEPLOYED 4 | VIRTUAL SAFETY CAR DEPLOYED 6 | VIRTUAL SAFETY CAR ENDING 7 | RED FLAG 5
     TRACK CLEAR -> 1 (not under a red flag: that ends at the next SESSION STARTED)
     a start announced as "RACE WILL START BEHIND THE SAFETY CAR" runs under 4 from lights out until Race Control
-    says ROLLING START or STANDING START (Belgium 2025: laps 1-4)
+    says ROLLING START or STANDING START (Belgium 2025: laps 1-4); so does a restart after a red flag if Race Control
+    spoke of the safety car while the race was stopped (F1's own feed shows 4 there: Monaco 2024, Mexico 2023,
+    Zandvoort 2023), and an EXTRA FORMATION LAP (Italy 2026). If no start message follows (Sao Paulo 2023) it ends
+    RESTART_SC_MAX_SEC after it began: F1's feed showed these starts for 108-109 s
     YELLOW / DOUBLE YELLOW in a sector -> 2 until that sector's CLEAR, unless a safety car or red flag covers it
 A lap's status is every code in force during it, each once, in order ("124").
 
@@ -58,6 +61,7 @@ from src.pipeline.telemetry_clock import LATER_LAP_LAG_SEC, utc
 
 SESSION_STARTED = "SESSION STARTED"
 LIGHTS_AFTER_MESSAGE_SEC = 0.27         # the lights go out this long after the message (70 races, sd 0.04 s)
+RESTART_SC_MAX_SEC = 180.0              # a start behind the safety car with no start message ends this long after
 GREEN, YELLOW, SC, RED, VSC, VSC_ENDING = "1", "2", "4", "5", "6", "7"
 SECTORS_TOLERANCE_SEC = 0.0035          # sectors and lap time are published to the millisecond
 POSITION_SLACK_SEC = 1.0                # a position change is stamped up to a second after the line
@@ -65,7 +69,8 @@ DELETED = re.compile(r"CAR (\d+) \(\w+\) (?:LAP )?TIME [\d:.]+ DELETED .* LAP (\
 REINSTATED = re.compile(r"CAR (\d+) \(\w+\) (?:LAP )?TIME [\d:.]+ REINSTATED .* LAP (\d+)")
 LAPS_DOWN = re.compile(r"\+\s*(\d+)\s*LAP")
 
-SMALL_TABLES = ("drivers", "laps", "stints", "race_control", "weather", "position", "session_result", "pit")
+SMALL_TABLES = ("sessions", "drivers", "laps", "stints", "race_control", "weather", "position", "session_result", "pit")
+EARLIEST_START = pd.Timedelta(hours=1)  # lights out is never earlier than this before the scheduled start
 
 
 class TranslationError(ValueError):
@@ -85,9 +90,15 @@ class Translation:
 
 # --- the clock ---------------------------------------------------------------------------------------------
 
-def lights_out(race_control: pd.DataFrame, laps: pd.DataFrame) -> Tuple[pd.Timestamp, Dict[str, Any]]:
-    """The UTC instant of lights out, and how it was found. Raises if neither source has it."""
+def lights_out(race_control: pd.DataFrame, laps: pd.DataFrame,
+               scheduled_start: Optional[pd.Timestamp] = None) -> Tuple[pd.Timestamp, Dict[str, Any]]:
+    """The UTC instant of lights out, and how it was found. Raises if neither source has it.
+
+    scheduled_start: the race's scheduled start (OpenF1's sessions table). A SESSION STARTED earlier than an hour
+    before it belongs to another session (Mexico 2026: one from the day before is in the race's messages)."""
     started = utc(race_control.loc[race_control["message"] == SESSION_STARTED, "date"]).sort_values()
+    if scheduled_start is not None:
+        started = started[started >= scheduled_start - EARLIEST_START]
     lap_one = utc(laps.loc[laps["lap_number"] == 1, "date_start"].dropna())
     shared = lap_one.mode().iloc[0] if len(lap_one) else pd.NaT       # the start most drivers' lap 1 carries
     if len(started):
@@ -137,6 +148,8 @@ def lap_times(laps: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFrame:
         is_lap_one = number == 1
         use_next = follows & np.isfinite(next_start) & (is_lap_one | ~np.isfinite(end))
         end = np.where(use_next, next_start, end)                # ...then it ends where the next lap starts
+        end = np.where(end > start, end, np.nan)                 # OpenF1 contradicting itself (Netherlands 2026: a lap
+                                                                 # ending 10 ms before it starts): unknown, not invented
         out.append(pd.DataFrame({"driver_number": driver, "lap_number": number, "start_sec": start, "end_sec": end}))
     return pd.concat(out, ignore_index=True)
 
@@ -148,11 +161,26 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
     rc = race_control.assign(t_sec=seconds_since(race_control["date"], t0)).sort_values("t_sec", kind="stable")
     neutral: Optional[str] = None             # a safety car, virtual safety car or red flag covers the whole track
     yellow: set = set()                       # sectors under yellow
-    behind_safety_car = False                 # "RACE WILL START BEHIND THE SAFETY CAR" was announced
+    behind_safety_car = False                 # "RACE WILL START BEHIND THE SAFETY CAR" was announced, or a
+                                              # red-flag restart where Race Control spoke of the safety car
     changes: List[Tuple[float, str]] = []
     last = None
+    restart_since: Optional[float] = None     # when a start behind the safety car began (RESTART_SC_MAX_SEC)
+
+    def expire(now: float) -> None:
+        nonlocal neutral, restart_since, last
+        if restart_since is not None and now > restart_since + RESTART_SC_MAX_SEC:
+            if neutral == SC:
+                neutral = None
+                code = YELLOW if yellow else GREEN
+                if code != last:
+                    changes.append((restart_since + RESTART_SC_MAX_SEC, code))
+                    last = code
+            restart_since = None
+
     for row in rc.itertuples():
         message, flag, scope = str(row.message or ""), str(row.flag or ""), str(row.scope or "")
+        expire(row.t_sec)
         if message.startswith("VIRTUAL SAFETY CAR DEPLOYED"):
             neutral = VSC
         elif message.startswith("VIRTUAL SAFETY CAR ENDING"):
@@ -163,9 +191,12 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
             neutral = RED
         elif message.startswith("RACE WILL START BEHIND THE SAFETY CAR"):
             behind_safety_car = True
-        elif message.startswith(("ROLLING START", "STANDING START")):
-            if neutral == SC:                 # the safety car that led the field to the start has gone in
-                neutral = None
+        elif neutral == RED and "SAFETY CAR" in message:
+            behind_safety_car = True          # "ALL CARS MAY OVERTAKE THE SAFETY CAR", "... WILL STAY OUT", "... LIGHTS ON"
+        elif message.startswith("EXTRA FORMATION LAP"):
+            neutral, restart_since = SC, row.t_sec   # one more lap behind the safety car before the start (Italy 2026)
+        elif neutral == SC and ("ROLLING START" in message or "STANDING START" in message):
+            neutral, restart_since = None, None      # the safety car that led the field to the start has gone in
         elif message.startswith("TRACK CLEAR"):
             yellow = set()
             if neutral != RED:                # a red flag ends when the race starts again, not when the track is clear
@@ -174,8 +205,9 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
             yellow = set()                    # grid are over (Italy 2025: one never cleared, 30 minutes of false yellow)
             if neutral == RED:
                 neutral = None
-            if behind_safety_car:             # the announced start behind the safety car begins now
-                neutral = SC
+            if behind_safety_car:             # the start behind the safety car begins now; if Race Control never says
+                neutral = SC                  # when it ends (no start message follows), it is capped
+                restart_since = None if _start_message_follows(rc, row.t_sec) else row.t_sec
             behind_safety_car = False
         elif flag in ("YELLOW", "DOUBLE YELLOW") and scope == "Sector":
             yellow.add(row.sector)
@@ -185,7 +217,19 @@ def status_timeline(race_control: pd.DataFrame, t0: pd.Timestamp) -> pd.DataFram
         if code != last:
             changes.append((row.t_sec, code))
             last = code
+    expire(float("inf"))
     return pd.DataFrame(changes, columns=["t_sec", "code"])
+
+
+def _start_message_follows(rc: pd.DataFrame, after_sec: float) -> bool:
+    """A ROLLING START / STANDING START message after `after_sec`, before the race is stopped or started again."""
+    for row in rc[rc["t_sec"] > after_sec].itertuples():
+        message = str(row.message or "")
+        if message == SESSION_STARTED or str(row.flag or "") == "RED":
+            return False
+        if ("ROLLING START" in message or "STANDING START" in message) and not message.startswith("RACE WILL"):
+            return True
+    return False
 
 
 def lap_status(start: np.ndarray, end: np.ndarray, timeline: pd.DataFrame) -> List[Optional[str]]:
@@ -446,7 +490,9 @@ def translate(tables: Dict[str, pd.DataFrame]) -> Translation:
     """OpenF1's small tables ({endpoint: rows}, see SMALL_TABLES; 'pit' may be missing) -> what Silver needs."""
     if tables["laps"].empty:
         raise TranslationError("OpenF1's lap table is empty")
-    t0, clock = lights_out(tables["race_control"], tables["laps"])
+    sessions = tables.get("sessions")
+    scheduled = utc(sessions["date_start"]).iloc[0] if sessions is not None and len(sessions) else None
+    t0, clock = lights_out(tables["race_control"], tables["laps"], scheduled)
     laps, report = lap_table(tables, t0)
     results = results_table(tables["session_result"], tables["drivers"], tables["position"])
     winner_laps = results["Laps"].max()
