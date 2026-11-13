@@ -462,11 +462,45 @@ def resample_driver(car: pd.DataFrame, pos: pd.DataFrame, lap_start_sec: np.ndar
     return out
 
 
+STOPPED_MARGIN_SEC = 5.0     # telemetry kept this long after a car that never finished its last lap came to rest
+STOPPED_FOR_SEC = 30.0       # standing still this long on that lap = it has stopped for good
+
+
+def stopped_at(car: pd.DataFrame, last_lap_start_sec: float, race_end_sec: float) -> float:
+    """
+    Where the telemetry of a car's unfinished last lap ends: a few seconds after it came to rest (the first time it
+    stands still for STOPPED_FOR_SEC), and never after the race's last lap end. The lap has no end time (the car
+    never crossed the line), but its telemetry is real: without it a retired car would vanish at the start of the lap
+    it stopped on, not where it stopped. What comes after it came to rest is left out: a car on a recovery truck
+    still sends a position. Returns the lap's start if the car never moved in it (and never past the race's end:
+    OpenF1 gives some cars a lap row dated minutes after the flag, Italy 2023).
+    """
+    t = _seconds(car["SessionTime"]).to_numpy(dtype=float)
+    speed = car["Speed"].to_numpy(dtype=float)
+    order = np.argsort(t)
+    t, speed = t[order], speed[order]
+    keep = np.isfinite(t) & (t >= last_lap_start_sec)
+    t, moving = t[keep], speed[keep] > 0
+    if not moving.any():
+        return float(min(last_lap_start_sec, race_end_sec))
+    rest_from = None                                  # the start of the standstill being followed
+    for when, is_moving in zip(t, moving):
+        if is_moving:
+            rest_from = None
+        else:
+            rest_from = when if rest_from is None else rest_from
+            if when - rest_from >= STOPPED_FOR_SEC:
+                break
+    end = rest_from if rest_from is not None else t[moving].max()
+    return float(min(end + STOPPED_MARGIN_SEC, race_end_sec))
+
+
 def clean_telemetry(car: pd.DataFrame, pos: pd.DataFrame, silver_laps: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, Any]]:
     """Resample every driver and stack the results. Lap boundaries come from Silver laps."""
     report: Dict[str, Any] = {"car_rows_in": int(len(car)), "pos_rows_in": int(len(pos)), "drivers_skipped": []}
     parts = []
     ident = silver_laps.iloc[0][["season", "round", "session"]]
+    race_end = float(silver_laps["lap_end_sec"].max())
 
     for drv_num, drv_laps in silver_laps.groupby("driver_number", sort=True):
         drv_laps = drv_laps.dropna(subset=["lap_start_sec"]).sort_values("lap_number")
@@ -475,8 +509,11 @@ def clean_telemetry(car: pd.DataFrame, pos: pd.DataFrame, silver_laps: pd.DataFr
         if drv_laps.empty or ends.empty or d_car.empty or d_pos.empty:
             report["drivers_skipped"].append(str(drv_num))
             continue
+        end_sec = float(ends.max())
+        if pd.isna(drv_laps["lap_end_sec"].iloc[-1]):
+            end_sec = max(end_sec, stopped_at(d_car, float(drv_laps["lap_start_sec"].iloc[-1]), race_end))
         frame = resample_driver(d_car, d_pos, drv_laps["lap_start_sec"].to_numpy(dtype=float),
-                                drv_laps["lap_number"].to_numpy(), float(ends.max()))
+                                drv_laps["lap_number"].to_numpy(), end_sec)
         if frame.empty:
             report["drivers_skipped"].append(str(drv_num))
             continue

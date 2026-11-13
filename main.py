@@ -1,4 +1,4 @@
-from src.f1_data import get_race_telemetry, enable_cache, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints
+from src.f1_data import get_race_telemetry, enable_cache, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints, example_lap_telemetry
 from src.run_session import run_arcade_replay, launch_insights_menu
 from src.interfaces.qualifying import run_qualifying_replay
 import sys
@@ -44,8 +44,11 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
     # Get example lap for track layout
     # Qualifying lap preferred for DRS zones (fallback to fastest race lap (no DRS data))
     example_lap = None
+    from_lake = hasattr(session, "example_lap")     # a race from the lake draws its track from its own fastest lap
     
     try:
+        if from_lake:
+            raise LookupError("the lake has races only so far")
         print("Attempting to load qualifying session for track layout...")
         quali_session = load_session(year, round_number, 'Q')
         if quali_session is not None and len(quali_session.laps) > 0:
@@ -60,9 +63,8 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
 
     # fallback: Use fastest race lap
     if example_lap is None:
-        fastest_lap = session.laps.pick_fastest()
-        if fastest_lap is not None:
-            example_lap = fastest_lap.get_telemetry()
+        example_lap = example_lap_telemetry(session)
+        if example_lap is not None:
             print("Using fastest race lap (DRS detection may use speed-based fallback)")
         else:
             print("Error: No valid laps found in session")

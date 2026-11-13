@@ -270,7 +270,25 @@ class TelemetryNotAvailable(RuntimeError):
     """The session loaded without car data, so it cannot be replayed."""
 
 
-def load_session(year, round_number, session_type="R"):
+def load_session(year, round_number, session_type="R", lake_root=None):
+    """
+    The session to replay. A race comes from the data lake (src/lib/lake_session.py): every race from 2023 on is
+    there, or is downloaded from OpenF1 and built now (about 3 minutes, once). Anything else (qualifying, sprints,
+    seasons before 2023) still comes through FastF1, which since October 2026 only has what is in its local cache.
+    """
+    from src.lib import lake_session
+    from src.pipeline import lake as _lake
+    root = lake_root if lake_root is not None else _lake.DEFAULT_LAKE_ROOT
+    if session_type == "R" and int(year) >= 2023:
+        if not lake_session.available(year, round_number, session_type, root):
+            try:
+                from src.pipeline.runner import run_pipeline
+                print(f"{year} round {round_number} is not in the lake with telemetry: downloading it from OpenF1...")
+                run_pipeline(year, round_number, session_type, lake_root=root, telemetry=True)
+            except Exception as err:      # no network, a race not run yet, ...: FastF1's cache may still have it
+                print(f"Could not build {year} round {round_number} from OpenF1 ({type(err).__name__}: {err})")
+        if lake_session.available(year, round_number, session_type, root):
+            return lake_session.LakeSession(year, round_number, session_type, root)
     # session_type: 'R' (Race), 'S' (Sprint) etc.
     session = fastf1.get_session(year, round_number, session_type)
     session.load(telemetry=True, weather=True)
@@ -289,6 +307,8 @@ def load_session(year, round_number, session_type="R"):
 
 
 def get_driver_colors(session):
+    if hasattr(session, "driver_colors"):          # a race from the lake: OpenF1's team colours
+        return session.driver_colors()
     color_mapping = fastf1.plotting.get_driver_color_mapping(session)
 
     # Convert hex colors to RGB tuples
@@ -301,8 +321,18 @@ def get_driver_colors(session):
 
 
 def get_circuit_rotation(session):
+    if hasattr(session, "circuit_rotation"):       # a race from the lake
+        return session.circuit_rotation()
     circuit = session.get_circuit_info()
     return circuit.rotation
+
+
+def example_lap_telemetry(session):
+    """One fast lap's telemetry (X, Y, Distance, DRS ...), for the track's outline: the lake's own, or FastF1's."""
+    if hasattr(session, "example_lap"):
+        return session.example_lap()
+    fastest_lap = session.laps.pick_fastest()
+    return None if fastest_lap is None else fastest_lap.get_telemetry()
 
 
 def _compute_safety_car_positions(frames, track_statuses, session):
@@ -329,11 +359,7 @@ def _compute_safety_car_positions(frames, track_statuses, session):
 
     # Build reference polyline from the first driver's telemetry to get track shape
     try:
-        fastest_lap = session.laps.pick_fastest()
-        if fastest_lap is None:
-            print("Safety Car: No fastest lap found, skipping SC position computation")
-            return
-        tel = fastest_lap.get_telemetry()
+        tel = example_lap_telemetry(session)
         if tel is None or tel.empty:
             print("Safety Car: No telemetry data, skipping SC position computation")
             return
@@ -698,10 +724,12 @@ def get_race_telemetry(session, session_type="R"):
         (driver_no, session, driver_codes[driver_no]) for driver_no in drivers
     ]
 
-    num_processes = min(cpu_count(), len(drivers))
-
-    with Pool(processes=num_processes) as pool:
-        results = pool.map(_process_single_driver, driver_args)
+    if hasattr(session, "driver_samples"):         # a race from the lake: Silver telemetry, already on one clock
+        results = [session.driver_samples(driver_no) for driver_no in drivers]
+    else:
+        num_processes = min(cpu_count(), len(drivers))
+        with Pool(processes=num_processes) as pool:
+            results = pool.map(_process_single_driver, driver_args)
 
     # Process results
     for result in results:
@@ -916,7 +944,7 @@ def get_race_telemetry(session, session_type="R"):
 
     for driver_no in drivers:
         drv=session.get_driver(driver_no)["Abbreviation"]
-        driver_laps=laps.pick_drivers(drv).sort_values("LapNumber")
+        driver_laps=laps[laps["Driver"] == drv].sort_values("LapNumber")
         windows=[]
 
         # FastF1 records pit ENTRY on the in-lap and pit EXIT on the following lap (the out-lap),
@@ -1073,7 +1101,11 @@ def _official_timing_stream(session):
 
     It comes from FastF1's private `_extended_timing_data` (the replay's lap-time code already
     relies on it) and is read from the FastF1 cache, so it costs no download.
+    A race from the lake has its own: OpenF1's position table.
     """
+    if hasattr(session, "timing_stream"):
+        stream = session.timing_stream()
+        return stream if len(stream) else None
     try:
         import fastf1._api as ffapi
         _, stream, _ = ffapi._extended_timing_data(session.api_path)

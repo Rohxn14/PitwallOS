@@ -2,8 +2,9 @@
 
 A developer's guide to how PitwallOS changed its data source. It is written piece by piece as the work is done.
 
-**Status:** done except the replay. The lake in `data/` is built from OpenF1 alone: 90 races, 2023 to 2026. The FastF1 lake
-it replaced is kept as `data_fastf1/`. New races are downloaded from OpenF1. The replay still reads FastF1 (next piece).
+**Status:** the lake in `data/` is built from OpenF1 alone (90 races, 2023 to 2026), new races are downloaded from OpenF1, and
+the replay reads the lake. FastF1 is still installed and used for three things: qualifying and sprint replays from its
+cache, the map's rotation, and the session picker's calendar. Removing it is the last piece.
 
 ## Why
 
@@ -35,8 +36,8 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 | 2 | Translation: OpenF1's tables into the lap table the cleaner reads, on one clock with zero at lights out | done |
 | 3 | Rebuild 70 races, compare with the old lake | done |
 | 4 | New races from OpenF1; pace models re-scored; the 2026 races; swap the lakes | done |
-| 5 | The replay from the lake | next |
-| 6 | FastF1 removed | planned |
+| 5 | The replay from the lake | done |
+| 6 | FastF1 removed (qualifying and sprints from OpenF1 first) | next |
 
 ## Decisions so far
 
@@ -381,3 +382,82 @@ What the swap did NOT change: the test fixtures. `tests/fixtures/lake/` and `lak
 shape is now the cleaner's input contract (the translation produces it), so they still test the cleaner exactly; the
 translation has its own golden race (`tests/fixtures/openf1/qatar_2024/`). Golden numbers measured on FastF1's clock in those
 tests stay as they are.
+
+
+## Piece 5: the replay from the lake
+
+### Purpose
+
+The replay (Tom Shaw's `src/f1_data.py`, `main.py`, `src/interfaces/race_replay.py`) read FastF1's `Session` object, which
+since the login exists only for sessions left in FastF1's cache: four races. The lake holds the same facts for all 90. This
+piece lets the replay read the lake, so every race from 2023 on replays again.
+
+### Design
+
+`src/lib/lake_session.py` holds `LakeSession`: one race from the lake, offering what the replay reads from a FastF1 session
+under the same names. It is an adapter again, at the other end of the system: the translation made OpenF1's tables look like
+FastF1's for the cleaner; `LakeSession` makes the lake look like a FastF1 session for the replay. The replay's frame builder
+(1,000 lines) and its window keep their code.
+
+| The replay reads | From FastF1 it was | From the lake it is |
+|---|---|---|
+| `session.laps`, `.results`, `.weather_data` | FastF1's tables | the translation of Bronze's OpenF1 tables (same shape) |
+| `session.track_status` | F1's status feed | the status timeline rebuilt from Race Control |
+| `session.race_control_messages` | F1's messages | Bronze `openf1_race_control`, on the session clock |
+| each lap's `get_telemetry()` | car and position samples merged per lap, in 20 worker processes | `driver_samples()`: Silver telemetry (10 Hz, one clock), no worker processes |
+| the timing stream (official order, gaps) | FastF1's private `_extended_timing_data` | `timing_stream()`: OpenF1's `position` and `intervals` tables |
+| team colours | `fastf1.plotting` | `driver_colors()`: OpenF1's `team_colour` |
+| the track's outline and DRS zones | the fastest qualifying lap | `example_lap()`: the fastest clean race lap in Silver telemetry |
+| the map's rotation | FastF1's circuit info | MultiViewer, through FastF1's client (the one thing still asked of FastF1's code for a race) |
+
+Five places in the replay ask `hasattr(session, ...)` and take the lake's version: `load_session`, `get_driver_colors`,
+`get_circuit_rotation`, `example_lap_telemetry` (new, used by `main.py` and the safety-car drawing), the driver loop of
+`get_race_telemetry`, and the two readers of the timing stream.
+
+`f1_data.load_session` decides the source: a race from 2023 on comes from the lake; if the lake lacks it, it is downloaded
+from OpenF1 and built first (about 3 minutes, once); only if that fails is FastF1's cache asked. Qualifying, sprints and
+seasons before 2023 still go to FastF1. The cached replay frames of a lake race have their own file name, so frames computed
+from FastF1 are never mixed with them (their clocks differ).
+
+### A change in Silver: the lap a car never finished
+
+Found by the comparison below. A car that retires on track has a last lap with no end (it never crosses the line again).
+Silver telemetry stopped at the car's last completed lap, so in the replay a retired car froze at the finish line instead of
+where it stopped. Now `cleaner.stopped_at` keeps the telemetry of that lap until the car comes to rest (the first time it
+stands still for 30 s), plus 5 s, and never past the race's end. What comes after is left out: a car on a recovery truck
+still sends a position. The lap itself keeps a null end time.
+
+### Measured: Baku 2026, both ways
+
+Baku 2026 is in FastF1's cache and in the lake. Its replay was built from each and compared at 5,800 instants per driver.
+
+| | Result |
+|---|---|
+| Distance between the same car in the two replays | median 0.54 m, 90 % under 2.1 m |
+| Same race position at the same instant | 99.6 % |
+| Final order, finished / retired state | identical for all 22 drivers |
+| The 17 finishers: lap number | identical throughout |
+
+The remaining differences are three retired cars, and the lake is right or more complete in each: Stroll's car, which the
+FastF1 replay moves to map coordinate (0, 0) after he stops (FastF1's "no position" value) while the lake keeps it where it
+stopped; Alonso and Colapinto, for whom OpenF1 has one more lap row (driving into the pits to retire).
+
+Qatar 2024, which FastF1 could no longer replay at all, builds its frames from the lake in about 100 s (once; then they are
+cached) with the official final order.
+
+### Known limits
+
+- The track outline comes from a race lap, so DRS zones are those used in that lap (the replay's own speed-based fallback
+  applies). Qualifying is not in the lake yet.
+- Gaps between cars update about every 4 s (OpenF1's `intervals`), not continuously.
+- Qualifying and sprint replays, and seasons before 2023, still need FastF1's cache.
+- The window itself needs a display and is checked by eye; its frames, lap times and order are tested without one.
+- Monaco 2026's car positions stop 45 minutes before the flag (OpenF1): its replay stops moving there.
+
+### Tests
+
+`tests/lib/test_lake_session.py` (8): a temporary lake built from real OpenF1 data (Qatar 2024's tables, two cars'
+telemetry). Which sessions are replayable; `load_session` never asks FastF1 for a race the lake has; the attributes the
+replay reads; a driver's arrays; the official order from the timing stream (Russell on pole, Verstappen leading after two
+minutes); the outline lap; the frames end to end; where a retired car's telemetry ends. `tests/test_load_session.py` (4): the
+order of sources, with an empty temporary lake and a faked download.

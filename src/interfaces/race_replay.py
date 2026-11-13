@@ -471,7 +471,10 @@ class F1RaceReplayWindow(arcade.Window):
                         classified_fallback,
                     )
                     try:
-                        _, stream_data, _ = ffapi._extended_timing_data(session.api_path)
+                        if hasattr(session, "timing_stream"):      # a race from the lake: OpenF1's order and gaps
+                            stream_data = session.timing_stream()
+                        else:
+                            _, stream_data, _ = ffapi._extended_timing_data(session.api_path)
                         required_stream_cols = {"Driver", "Time", "Position", "GapToLeader", "IntervalToPositionAhead"}
                         missing_stream_cols = required_stream_cols.difference(stream_data.columns)
                         if missing_stream_cols:
