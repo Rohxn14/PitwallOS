@@ -1,8 +1,8 @@
 """
 f1_data.load_session: where a session to replay comes from, and what it says when it cannot be had.
 
-A race from 2023 on comes from the lake (tests/lib/test_lake_session.py). When the lake does not have it and it cannot
-be downloaded from OpenF1, and for every other kind of session, FastF1 is asked. FastF1 only logs a failed download
+A session from 2023 on comes from the lake (tests/lib/test_lake_session.py, test_lake_qualifying.py). When the lake
+does not have it and it cannot be downloaded from OpenF1, and for seasons before 2023, FastF1 is asked. FastF1 only logs a failed download
 (401 from F1's archive since October 2026) and returns anyway, as seen on 2025 round 12: laps 825, car data 0
 drivers. The replay then crashed in its worker processes with KeyError '1': a session without car data stops at once
 with a message that says why.
@@ -13,7 +13,7 @@ Nothing here touches the network or the real lake: the lake is an empty temporar
 import pytest
 
 from src import f1_data
-from src.pipeline import runner
+from src.pipeline import openf1_bronze, runner
 
 
 class FakeSession:
@@ -34,7 +34,12 @@ def downloads(monkeypatch):
         asked.append((year, round_number, session_type, telemetry))
         raise ConnectionError("no network in tests")
 
+    def no_download(year, round_number, session_type, lake_root):
+        asked.append((year, round_number, session_type, "bronze"))
+        raise ConnectionError("no network in tests")
+
     monkeypatch.setattr(runner, "run_pipeline", no_network)
+    monkeypatch.setattr(openf1_bronze, "ingest_session", no_download)
     return asked
 
 
@@ -50,11 +55,11 @@ def test_a_race_the_lake_lacks_is_asked_of_openf1_then_of_fastf1(monkeypatch, tm
     assert session.loaded_with == {"telemetry": True, "weather": True}
 
 
-def test_a_qualifying_session_goes_straight_to_fastf1(monkeypatch, tmp_path, downloads):
+def test_a_qualifying_session_the_lake_lacks_is_asked_of_openf1_then_of_fastf1(monkeypatch, tmp_path, downloads):
     session = FakeSession({"1": object()})
     _with_session(monkeypatch, session)
     assert f1_data.load_session(2026, 15, "Q", lake_root=str(tmp_path)) is session
-    assert downloads == []                                          # the lake has races only so far
+    assert downloads == [(2026, 15, "Q", "bronze")]                 # its Bronze only: qualifying gets no Silver
 
 
 def test_a_race_before_2023_goes_straight_to_fastf1(monkeypatch, tmp_path, downloads):

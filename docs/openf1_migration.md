@@ -4,8 +4,8 @@ A developer's guide to how PitwallOS changed its data source. It is written piec
 
 **Status:** the lake in `data/` is built from OpenF1 alone (90 races, 2023 to 2026), new races are downloaded from OpenF1, and
 the replay reads the lake. Sprints replay from the lake too, and the session picker's calendar and the map's rotation no longer
-need FastF1. FastF1 is still installed for one thing: qualifying replays, from its cache. Qualifying from OpenF1 is the
-last step before it can be removed.
+need FastF1. Qualifying replays from the lake too. Every session the app can open from 2023 on now comes from OpenF1; FastF1
+is still installed, as the last fallback and for the old lake's code paths. Removing it is the last piece.
 
 ## Why
 
@@ -39,7 +39,8 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 | 4 | New races from OpenF1; pace models re-scored; the 2026 races; swap the lakes | done |
 | 5 | The replay from the lake | done |
 | 6 | The calendar and the circuits without FastF1; sprints from OpenF1 | done |
-| 7 | Qualifying from OpenF1, then FastF1 removed | next |
+| 7 | Qualifying from OpenF1 | done |
+| 8 | FastF1 removed | next |
 
 ## Decisions so far
 
@@ -519,3 +520,54 @@ without a sprint says so.
 - Qualifying and sprint qualifying are not in the lake: their replays still need FastF1's cache.
 - A sprint is not pre-downloaded; the first replay of each waits for the download.
 - Analyze has no sprint view: the analyses are about races.
+
+## Piece 7: qualifying from OpenF1
+
+### Purpose
+
+The qualifying replay shows each driver's fastest lap of Q1, Q2 and Q3 as a trace. It was the last thing in the app that
+needed FastF1. `src/lib/lake_qualifying.py` (`LakeQualifying`) answers its three questions from Bronze.
+
+### Design
+
+Qualifying is ingested into Bronze like a race (`openf1_bronze`, sessions "Q" and "SQ"; sprint qualifying is looked for
+under both names OpenF1 has used, "Sprint Qualifying" and 2023's "Sprint Shootout"). It gets **no Silver and no Gold**: the
+cleaner is about races (a clock from lights out, laps chained to the flag, clean laps, stints), and the only consumer of
+qualifying is this replay, which needs a few dozen laps cut from the raw tables. `openf1_bronze.RACE_LIKE` names the
+sessions that go on to Silver ("R", "S").
+
+| The replay needs | From OpenF1 |
+|---|---|
+| the results with each driver's Q1 / Q2 / Q3 time | `session_result.duration`, a list of three per driver |
+| the laps of each part | Race Control has one `SESSION STARTED` and one `SESSION FINISHED` per part, numbered by `qualifying_phase`; a lap belongs to the part in which it started. A part stopped by a red flag and restarted is one part |
+| a driver's fastest lap of a part | the lap of that part whose time equals his official best in the result table; failing that, the shortest timed lap that is not a pit-out lap. A faster lap deleted for track limits is therefore never chosen |
+| that lap's telemetry | `car_data` and `location` between the lap's start (`date_start` - 0.173 s) and its end, on a clock from 0; position interpolated onto the speed samples; a missing reading (2026 has empty DRS values) becomes 0 |
+
+`f1_data._quali_fastest_lap` takes the lake's lap and telemetry when the session offers them; the 280 lines that turn a lap
+into frames are unchanged. `load_session` sends "Q" and "SQ" to the lake, downloading the session's Bronze first if it is
+missing (about 2.5 minutes), and asks FastF1 only if that fails.
+
+### Measured: Baku 2026 qualifying, both ways
+
+| | Result |
+|---|---|
+| Position and Q1 / Q2 / Q3 times | identical for all 22 drivers |
+| Fastest laps (22 + 15 + 10) | 47 in both, 47 with the same lap time |
+| The same car on the same lap, distance between the two replays | median 2.0 m, 90 % under 4.9 m, worst lap 29 m |
+| Sector times, compound, top speed (331 km/h) | identical |
+
+Before the result table was used to pick the lap, 46 of 47 matched: the lake had taken a faster lap that did not count.
+The four qualifying sessions FastF1's cache holds (2026 Australia, Barcelona, Baku, Bahrain) are all in the lake.
+
+### Tests
+
+`tests/lib/test_lake_qualifying.py` (10), on a real cut of Baku 2026 qualifying
+(`tests/fixtures/openf1/baku_2026_qualifying/`): the three parts' times; a red-flagged part joined; a lap's part; the
+official results (pole 1:42.526); the fastest lap by code and by number; a made-up faster lap not chosen; a lap's telemetry
+(6.0 km, ends where it began); a lap without samples; the replay's frames; `load_session` never asking FastF1.
+
+### Known limits
+
+- Qualifying cannot be analysed, only replayed: it has no Silver.
+- Sprint qualifying is wired and found under both names, but no real session has been downloaded or replayed.
+- The 0.173 s lag of OpenF1's lap stamps was measured on races and is assumed for qualifying.

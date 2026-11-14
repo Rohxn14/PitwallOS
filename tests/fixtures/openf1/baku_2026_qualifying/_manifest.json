@@ -1,0 +1,196 @@
+{
+ "season": 2026,
+ "round": 15,
+ "session": "Q",
+ "event_name": "Azerbaijan Grand Prix",
+ "location": "Baku",
+ "country": "Azerbaijan",
+ "circuit": "Baku",
+ "event_date": "2026-09-25",
+ "source": "openf1",
+ "driver_count": 22,
+ "telemetry": true,
+ "warnings": [],
+ "openf1": {
+  "session_key": 11373,
+  "meeting_key": 1295,
+  "session_start_utc": "2026-09-25T12:00:00+00:00",
+  "session_end_utc": "2026-09-25T13:00:00+00:00",
+  "gmt_offset": "04:00:00",
+  "empty": [
+   "intervals",
+   "overtakes",
+   "pit"
+  ],
+  "missing": {
+   "car_data": [],
+   "location": []
+  },
+  "api": "https://api.openf1.org/v1/",
+  "updated_at_utc": "2026-11-14T11:44:40+00:00"
+ },
+ "tables": {
+  "openf1_sessions": {
+   "rows": 1,
+   "bytes": 9937,
+   "columns": [
+    "session_key",
+    "session_type",
+    "session_name",
+    "date_start",
+    "date_end",
+    "meeting_key",
+    "circuit_key",
+    "circuit_short_name",
+    "country_key",
+    "country_code",
+    "country_name",
+    "location",
+    "gmt_offset",
+    "year",
+    "is_cancelled"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_drivers": {
+   "rows": 22,
+   "bytes": 10508,
+   "columns": [
+    "meeting_key",
+    "session_key",
+    "driver_number",
+    "broadcast_name",
+    "full_name",
+    "name_acronym",
+    "team_name",
+    "team_colour",
+    "first_name",
+    "last_name",
+    "headshot_url",
+    "country_code"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_laps": {
+   "rows": 373,
+   "bytes": 25764,
+   "columns": [
+    "meeting_key",
+    "session_key",
+    "driver_number",
+    "lap_number",
+    "date_start",
+    "duration_sector_1",
+    "duration_sector_2",
+    "duration_sector_3",
+    "i1_speed",
+    "i2_speed",
+    "is_pit_out_lap",
+    "lap_duration",
+    "segments_sector_1",
+    "segments_sector_2",
+    "segments_sector_3",
+    "st_speed"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_stints": {
+   "rows": 66,
+   "bytes": 6301,
+   "columns": [
+    "meeting_key",
+    "session_key",
+    "stint_number",
+    "driver_number",
+    "lap_start",
+    "lap_end",
+    "compound",
+    "tyre_age_at_start"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_race_control": {
+   "rows": 134,
+   "bytes": 9467,
+   "columns": [
+    "meeting_key",
+    "session_key",
+    "date",
+    "driver_number",
+    "lap_number",
+    "category",
+    "flag",
+    "scope",
+    "sector",
+    "qualifying_phase",
+    "message"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_weather": {
+   "rows": 81,
+   "bytes": 8700,
+   "columns": [
+    "date",
+    "session_key",
+    "rainfall",
+    "wind_direction",
+    "meeting_key",
+    "wind_speed",
+    "air_temperature",
+    "humidity",
+    "pressure",
+    "track_temperature"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_session_result": {
+   "rows": 22,
+   "bytes": 7905,
+   "columns": [
+    "position",
+    "driver_number",
+    "number_of_laps",
+    "dnf",
+    "dns",
+    "dsq",
+    "duration",
+    "gap_to_leader",
+    "meeting_key",
+    "session_key"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_car_data": {
+   "rows": 392414,
+   "bytes": 1468981,
+   "columns": [
+    "date",
+    "session_key",
+    "speed",
+    "meeting_key",
+    "n_gear",
+    "throttle",
+    "brake",
+    "drs",
+    "driver_number",
+    "rpm"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  },
+  "openf1_location": {
+   "rows": 405526,
+   "bytes": 1666356,
+   "columns": [
+    "date",
+    "session_key",
+    "meeting_key",
+    "y",
+    "x",
+    "z",
+    "driver_number"
+   ],
+   "origin": "downloaded 2026-11-14T11:44:40+00:00"
+  }
+ }
+}

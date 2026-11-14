@@ -72,7 +72,7 @@ def bronze_step(year: int, round_number: int, session_type: str, lake_root: str,
 
     start = time.time()
     downloaded = None
-    if session_type in openf1_bronze.SESSION_NAMES and (not lake.has_bronze(year, round_number, session_type, lake_root)
+    if session_type in openf1_bronze.RACE_LIKE and (not lake.has_bronze(year, round_number, session_type, lake_root)
                                  or lake.read_manifest(year, round_number, session_type, lake_root).get("source")
                                  == lake.OPENF1):
         out = openf1_bronze.ingest_session(year, round_number, session_type, lake_root, telemetry=telemetry)

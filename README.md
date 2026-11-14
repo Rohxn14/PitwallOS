@@ -155,13 +155,13 @@ python -m docs.make_figures                                           # this pag
 The replay comes from F1 Race Replay (Tom Shaw and its contributors), with a few fixes (an accurate leaderboard at the end of a race,
 rewind-safe insight windows).
 
-Every race and sprint from 2023 on replays from the data lake (OpenF1's telemetry): 90 races so far. A session that is not in the lake
-yet is downloaded and built first, about 3 minutes, once. Checked against FastF1 on the one race both have (Baku 2026): the same car is a
-median 0.5 m apart in the two replays, with the same order 99.6 % of the time and the same result ([guide](docs/openf1_migration.md)).
+Every race, sprint and qualifying session from 2023 on replays from the data lake (OpenF1's telemetry): 90 races so far. A session
+that is not in the lake yet is downloaded first, about 3 minutes, once. Checked against FastF1 on the one race weekend both have
+(Baku 2026): in the race the same car is a median 0.5 m apart in the two replays, with the same order 99.6 % of the time and the same
+result; in qualifying all 47 fastest laps have the same time ([guide](docs/openf1_migration.md)).
 
-**Current limits:** qualifying replays still read FastF1, which since October 2026 only has what is in your local FastF1 cache (or an F1 TV
-login). The track outline is drawn from a race lap, and gaps between cars update about every 4 s. Seasons before 2023 are not available:
-OpenF1 starts there.
+**Current limits:** the track outline of a race is drawn from a race lap, and gaps between cars update about every 4 s. Seasons before
+2023 are not available: OpenF1 starts there.
 
 **Features**
 
@@ -220,7 +220,7 @@ docs/                    developer's guides, a catalogue of F1 strategies, this 
   telemetry stream this project is built on. Its contributors are listed in [contributors.md](./contributors.md), and its roadmap is kept in
   [docs/upstream_roadmap.md](./docs/upstream_roadmap.md).
 - **[FastF1](https://github.com/theOehrly/Fast-F1)** made F1's timing data accessible, and supplied this project's lap data until October 2026;
-  qualifying replays still use it for sessions in its cache.
+  it is being removed.
 - **[MultiViewer](https://multiviewer.app)** provides each circuit's map rotation and corner numbers.
 - **[OpenF1](https://openf1.org)** provides all the data (laps, pit stops, Race Control, results, telemetry), under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The charts on this page and the
   test fixtures in `tests/fixtures/openf1/` are derived from it and shared under the same licence, for non-commercial use.

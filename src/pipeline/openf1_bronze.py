@@ -21,7 +21,8 @@ cleaner reads is Silver's job, so a mistake there never costs a download.
     openf1_car_data, openf1_location   telemetry, ~4 samples a second per driver (openf1.py downloads them)
 
 SPRINTS too (session "S"): a sprint is a short race, with the same tables; it is the 'Sprint' session of the race's
-meeting. Qualifying is not ingested yet.
+meeting. Qualifying ("Q") and sprint qualifying ("SQ") are ingested the same way, for the qualifying replay
+(src/lib/lake_qualifying.py reads their Bronze directly: they get no Silver).
 
 WHICH RACE: OpenF1 has no round numbers. A season's rounds are its 'Race' sessions that were not cancelled, in date
 order (season_calendar). Checked on 2023-2025: all 70 races get the round number the lake already used.
@@ -61,7 +62,10 @@ from src.pipeline.openf1 import (API_URL, CAR_TABLE, LOCATION_TABLE, PER_DRIVER,
                                  download_per_driver, http_fetch)
 
 RACE_SESSION = "R"
-SESSION_NAMES = {RACE_SESSION: "Race", "S": "Sprint"}    # our session code -> OpenF1's session_name
+# our session code -> the names OpenF1 has used for it (2023 called sprint qualifying the "Sprint Shootout")
+SESSION_NAMES = {RACE_SESSION: ("Race",), "S": ("Sprint",), "Q": ("Qualifying",),
+                 "SQ": ("Sprint Qualifying", "Sprint Shootout")}
+RACE_LIKE = (RACE_SESSION, "S")        # sessions with a start and laps to the flag: these go on to Silver and Gold
 
 # Endpoints asked once per race, by session key (meetings: by meeting key).
 REQUIRED = ("sessions", "meetings", "drivers", "laps", "stints", "race_control", "weather", "position",
@@ -101,7 +105,7 @@ def season_calendar(fetch: Fetch, year: int) -> pd.DataFrame:
     The round is the race's place in date order among the 'Race' sessions that were not cancelled (2023 lists Imola,
     cancelled, so Monaco is round 6). Sprints are left out by their name: OpenF1 calls them 'Sprint'.
     """
-    sessions = [s for s in fetch("sessions", {"year": int(year), "session_name": SESSION_NAMES[RACE_SESSION]})
+    sessions = [s for s in fetch("sessions", {"year": int(year), "session_name": SESSION_NAMES[RACE_SESSION][0]})
                 if not s.get("is_cancelled")]
     if not sessions:
         raise OpenF1Error(f"OpenF1 lists no race for {year}")
@@ -132,12 +136,16 @@ def session_of(fetch: Fetch, race: pd.Series, session: str) -> Dict[str, Any]:
     """
     if session == RACE_SESSION:
         return {"session_key": int(race["session_key"]), "start_utc": race["start_utc"], "end_utc": race["end_utc"]}
-    name = SESSION_NAMES[session]
-    found = [s for s in fetch("sessions", {"meeting_key": int(race["meeting_key"]), "session_name": name})
-             if not s.get("is_cancelled")]
+    names = SESSION_NAMES[session]
+    found = []
+    for name in names:
+        found += [s for s in fetch("sessions", {"meeting_key": int(race["meeting_key"]), "session_name": name})
+                  if not s.get("is_cancelled")]
+        if found:
+            break
     if len(found) != 1:
         raise OpenF1Error(f"{int(race['season'])} round {int(race['round'])} ({race['event_name']}): {len(found)} "
-                          f"'{name}' sessions in OpenF1, need exactly one")
+                          f"'{names[0]}' sessions in OpenF1, need exactly one")
     return {"session_key": int(found[0]["session_key"]), "start_utc": pd.Timestamp(found[0]["date_start"]),
             "end_utc": pd.Timestamp(found[0]["date_end"])}
 
@@ -210,8 +218,7 @@ def ingest_session(year: int, round_number: int, session: str = RACE_SESSION,
     """
     start = time.time()
     if session not in SESSION_NAMES:
-        raise OpenF1Error(f"session '{session}': only races and sprints ({', '.join(SESSION_NAMES)}) are ingested "
-                          "from OpenF1 so far")
+        raise OpenF1Error(f"session '{session}': OpenF1's Bronze knows {', '.join(SESSION_NAMES)}")
     fetch = fetch or http_fetch()
     race = race_of(calendar if calendar is not None else season_calendar(fetch, year), year, round_number)
     this = session_of(fetch, race, session)

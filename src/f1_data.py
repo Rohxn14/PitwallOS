@@ -272,13 +272,26 @@ class TelemetryNotAvailable(RuntimeError):
 
 def load_session(year, round_number, session_type="R", lake_root=None):
     """
-    The session to replay. A race or a sprint comes from the data lake (src/lib/lake_session.py): every race from
-    2023 on is there, or is downloaded from OpenF1 and built now (about 3 minutes, once). Anything else (qualifying,
-    seasons before 2023) still comes through FastF1, which since October 2026 only has what is in its local cache.
+    The session to replay, from the data lake: a race or a sprint (src/lib/lake_session.py), a qualifying or sprint
+    qualifying session (src/lib/lake_qualifying.py). What the lake lacks is downloaded from OpenF1 first (about 3
+    minutes, once). Only if that fails, and for seasons before 2023, is FastF1 asked: since October 2026 it only has
+    what is in its local cache.
     """
     from src.lib import lake_session
     from src.pipeline import lake as _lake
     root = lake_root if lake_root is not None else _lake.DEFAULT_LAKE_ROOT
+    from src.lib import lake_qualifying
+    if session_type in lake_qualifying.SESSION_TITLES and int(year) >= 2023:
+        if not lake_qualifying.available(year, round_number, session_type, root):
+            try:
+                from src.pipeline import openf1_bronze
+                print(f"{year} round {round_number} '{session_type}' is not in the lake: downloading it from OpenF1...")
+                openf1_bronze.ingest_session(year, round_number, session_type, root)
+            except Exception as err:      # no network, a session not run yet, ...: FastF1's cache may still have it
+                print(f"Could not download {year} round {round_number} '{session_type}' from OpenF1 "
+                      f"({type(err).__name__}: {err})")
+        if lake_qualifying.available(year, round_number, session_type, root):
+            return lake_qualifying.LakeQualifying(year, round_number, session_type, root)
     if session_type in lake_session.SESSION_TITLES and int(year) >= 2023:
         if not lake_session.available(year, round_number, session_type, root):
             try:
@@ -1155,7 +1168,19 @@ def get_qualifying_results(session):
     return qualifying_data
 
 
-def get_driver_quali_telemetry(session, driver_code: str, quali_segment: str):
+def _quali_fastest_lap(session, driver_code: str, quali_segment: str):
+    """(a driver's fastest lap of one part of qualifying, its telemetry): the lake's own, or FastF1's."""
+    if quali_segment not in ("Q1", "Q2", "Q3"):
+        raise ValueError("quali_segment must be 'Q1', 'Q2', or 'Q3'")
+    if hasattr(session, "segment_fastest_lap"):        # a session from the lake (src/lib/lake_qualifying.py)
+        fastest_lap, telemetry = session.segment_fastest_lap(driver_code, quali_segment)
+        if fastest_lap is None:
+            raise ValueError(f"No valid laps for driver '{driver_code}' in {quali_segment}")
+        return fastest_lap, telemetry
+    return _fastf1_quali_fastest_lap(session, driver_code, quali_segment)
+
+
+def _fastf1_quali_fastest_lap(session, driver_code: str, quali_segment: str):
     # Split Q1/Q2/Q3 sections
     q1, q2, q3 = session.laps.split_qualifying_sessions()
 
@@ -1182,7 +1207,11 @@ def get_driver_quali_telemetry(session, driver_code: str, quali_segment: str):
     if fastest_lap is None:
         raise ValueError(f"No valid laps for driver '{driver_code}' in {quali_segment}")
 
-    telemetry = fastest_lap.get_telemetry()
+    return fastest_lap, fastest_lap.get_telemetry()
+
+
+def get_driver_quali_telemetry(session, driver_code: str, quali_segment: str):
+    fastest_lap, telemetry = _quali_fastest_lap(session, driver_code, quali_segment)
 
     # Guard: if telemetry has no time data, return empty
     if (
@@ -1532,10 +1561,12 @@ def get_quali_telemetry(session, session_type="Q"):
 
     print(f"Processing {len(session.drivers)} drivers in parallel...")
 
-    num_processes = min(cpu_count(), len(session.drivers))
-
-    with Pool(processes=num_processes) as pool:
-        results = pool.map(_process_quali_driver, driver_args)
+    if hasattr(session, "segment_fastest_lap"):        # from the lake: one process, the tables are read once
+        results = [_process_quali_driver(args) for args in driver_args]
+    else:
+        num_processes = min(cpu_count(), len(session.drivers))
+        with Pool(processes=num_processes) as pool:
+            results = pool.map(_process_quali_driver, driver_args)
     for result in results:
         driver_code = result["driver_code"]
         telemetry_data[driver_code] = {

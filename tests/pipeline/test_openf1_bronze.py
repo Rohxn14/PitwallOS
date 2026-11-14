@@ -258,9 +258,28 @@ def test_it_refuses_a_round_that_holds_another_session(tmp_path):
         openf1_bronze.ingest_session(*MONZA, root=tmp_path, fetch=FakeOpenF1(), calendar=moved)
 
 
-def test_only_races_so_far(tmp_path):
-    with pytest.raises(openf1.OpenF1Error, match="only races"):
-        openf1_bronze.ingest_session(*MONZA, session="Q", root=tmp_path, fetch=FakeOpenF1())
+def test_a_kind_of_session_it_does_not_know_is_refused(tmp_path):
+    with pytest.raises(openf1.OpenF1Error, match="OpenF1's Bronze knows R, S, Q, SQ"):
+        openf1_bronze.ingest_session(*MONZA, session="FP1", root=tmp_path, fetch=FakeOpenF1())
+
+
+def test_sprint_qualifying_is_found_under_either_of_its_names(tmp_path):
+    """2023 called it the Sprint Shootout; from 2024 it is Sprint Qualifying."""
+    class Shootout(FakeOpenF1):
+        def __call__(self, endpoint, query):
+            if endpoint == "sessions" and "session_name" in query and "year" not in query:
+                self.calls.append((endpoint, dict(query)))
+                if query["session_name"] != "Sprint Shootout":
+                    return []
+                return [{"session_key": 8888, "meeting_key": MEETING, "date_start": "2023-09-02T10:00:00+00:00",
+                         "date_end": "2023-09-02T10:44:00+00:00", "is_cancelled": False}]
+            return super().__call__(endpoint, query)
+
+    fake = Shootout()
+    out = openf1_bronze.ingest_session(*MONZA, session="SQ", root=tmp_path, fetch=fake, telemetry=False)
+    assert out["session_key"] == 8888 and lake.has_bronze(*MONZA, session="SQ", root=tmp_path)
+    assert [q["session_name"] for e, q in fake.calls if "session_name" in q and "year" not in q] == [
+        "Sprint Qualifying", "Sprint Shootout"]
 
 
 # --- sprints ---------------------------------------------------------------------------------------------------------
