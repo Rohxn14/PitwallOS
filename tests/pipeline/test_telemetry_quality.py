@@ -11,8 +11,7 @@ import pandas as pd
 import pytest
 
 from src.pipeline import lake, telemetry_quality as quality
-from src.pipeline.cleaner import build_silver
-from tests.pipeline.test_telemetry_clock import LUSAIL_M, QATAR, add_openf1_fixture
+from tests.conftest import LUSAIL_M, QATAR
 
 
 def ticks(driver, lap, n, start=0.0, gap=None, speed=180.0, x_step=50.0):
@@ -57,14 +56,6 @@ def test_a_lap_is_measured_by_speed_and_by_position():
     assert two["path_m"].tolist() == pytest.approx([495.0, 495.0])
 
 
-def test_the_line_speed_is_the_tick_nearest_the_end_of_the_lap():
-    tel = ticks("1", 1, 100, speed=300.0)
-    tel.loc[50, "speed_kmh"] = 310.0                                   # the tick at 5.0 s
-    loop = pd.DataFrame({"DriverNumber": ["1", "1", "1"], "LapNumber": [1, 2, 3],
-                         "Time": pd.to_timedelta([5.04, 9.9, 60.0], unit="s"), "SpeedFL": [306.0, 296.0, 290.0]})
-    assert quality.line_speeds(tel, loop).tolist() == [4.0, 4.0]      # lap 3 ended after the last tick: no value
-
-
 def test_the_finish_line_is_where_the_cars_are_when_their_laps_end():
     tel = pd.concat([ticks("1", 1, 100), ticks("4", 1, 100)])        # x = 0, 5, 10 ... m along y = 0
     laps = pd.DataFrame({"driver_number": ["1", "4", "1"], "lap_end_sec": [5.0, 5.2, 9.0],
@@ -98,31 +89,28 @@ def test_the_slowest_point_is_found_without_the_clock():
 
 def test_a_race_that_passes_every_check_has_no_problems():
     good = {"drivers_missing": "", "racing_hole_share": 0.0, "longest_hole_sec": 0.0, "full_lap_share": 1.0,
-            "off_length_share": 0.0, "speed_to_position": 1.0, "line_speed_iqr_kmh": 2.0}
+            "off_length_share": 0.0, "speed_to_position": 1.0}
     assert quality.problems(good) == []
     bad = dict(good, drivers_missing="44", racing_hole_share=0.01, longest_hole_sec=30.0, full_lap_share=0.5,
-               off_length_share=0.2, speed_to_position=0.95, line_speed_iqr_kmh=12.0)
-    assert len(quality.problems(bad)) == 6
+               off_length_share=0.2, speed_to_position=0.95)
+    assert len(quality.problems(bad)) == 5
     assert quality.problems(dict(good, full_lap_share=np.nan)) == ["only nan % of clean laps complete"]
 
 
-def test_qatar_with_two_cars_on_six_laps_says_exactly_that(golden_lake, capsys):
-    add_openf1_fixture(golden_lake)
-    build_silver(*QATAR, "R", lake_root=golden_lake, telemetry=True)
-    row = quality.race_quality(*QATAR, root=golden_lake)
-    assert row["source"] == lake.OPENF1 and row["openf1_session_key"] == 9655 and row["clock_drivers"] == 20
-    assert row["drivers"] == 20 and row["drivers_with_telemetry"] == 2
-    assert row["drivers_missing"].split() == ["10", "11", "14", "16", "18", "20", "22", "23", "24", "27", "30", "31",
-                                              "43", "44", "55", "63", "77", "81"]
+def test_qatar_with_two_cars_on_six_laps_says_exactly_that(openf1_qatar_lake, capsys):
+    row = quality.race_quality(*QATAR, root=openf1_qatar_lake)
+    assert row["source"] == lake.OPENF1 and row["openf1_session_key"] == 9655
+    assert row["drivers"] == 18 and row["drivers_with_telemetry"] == 2            # 20 started; OCO and COL never ended a lap
+    assert row["drivers_missing"].split() == ["10", "11", "14", "16", "18", "20", "22", "23", "24", "27", "30", "44",
+                                              "55", "63", "77", "81"]
     assert row["drivers_with_holes"] == 2 and row["longest_hole_sec"] > 3000      # laps 7-57: no samples in the fixture
     assert 0 < row["full_laps"] <= 4 and row["full_lap_share"] < 0.01
     assert abs(row["lap_length_m"] / LUSAIL_M - 1) < 0.02 and 0.99 <= row["speed_to_position"] <= 1.01
-    assert row["line_speed_laps"] >= 10 and row["line_speed_iqr_kmh"] < 10 and row["clock_method"] == "lap 1"   # 12 crossings, 8 behind the SC
     assert row["racing_hole_share"] == row["hole_share"]                        # Qatar had no red flag
     assert np.isfinite(row["line_x_m"]) and row["line_spread_m"] < 10
     assert "no telemetry for car 10 11" in row["problems"] and "holes" in row["problems"]
 
-    assert quality.main(["--season", "2024", "--lake", golden_lake]) == 0
+    assert quality.main(["--season", "2024", "--lake", openf1_qatar_lake]) == 0
     assert "1 races, 0 pass every check" in capsys.readouterr().out
-    saved = lake.read_report(quality.REPORT, golden_lake)
+    saved = lake.read_report(quality.REPORT, openf1_qatar_lake)
     assert saved[["season", "round"]].values.tolist() == [[2024, 23]]

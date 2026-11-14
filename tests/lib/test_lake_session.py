@@ -3,11 +3,9 @@ lake_session.py: a race for the replay, read from the lake instead of FastF1.
 
 The lake is a temporary one built from real OpenF1 data: Qatar 2024's small tables (tests/fixtures/openf1/qatar_2024)
 and the telemetry of two cars, VER and NOR, for laps 1-6 (tests/fixtures/openf1/qatar_openf1_*). The other 18 cars
-have laps but no telemetry, as a car OpenF1 lacks. No network, no real lake, and FastF1 is never asked.
+have laps but no telemetry, as a car OpenF1 lacks. No network, no real lake.
 """
 
-import json
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -18,30 +16,16 @@ import src.f1_data as f1_data
 from src.lib import lake_session
 from src.lib.lake_session import LakeSession
 from src.lib.running_order import official_positions
-from src.pipeline import cleaner, feature_store, lake
+from src.pipeline import cleaner
+from tests.conftest import openf1_qatar_bronze
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "openf1"
 QATAR = (2024, 23)
 
 
-def bronze_with_telemetry(root):
-    bronze = lake.session_dir(lake.BRONZE, *QATAR, "R", root)
-    shutil.copytree(FIXTURES / "qatar_2024", bronze)
-    manifest = json.loads((bronze / lake.MANIFEST_NAME).read_text(encoding="utf-8"))
-    for table in ("openf1_car_data", "openf1_location"):
-        shutil.copy(FIXTURES / f"qatar_{table}.parquet", bronze / f"{table}.parquet")
-        manifest["tables"][table] = {"rows": len(pd.read_parquet(bronze / f"{table}.parquet"))}
-    manifest["telemetry"] = True
-    (bronze / lake.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
-
-
 @pytest.fixture(scope="module")
-def qatar_lake(tmp_path_factory):
-    root = str(tmp_path_factory.mktemp("lake"))
-    bronze_with_telemetry(root)
-    cleaner.build_silver(*QATAR, "R", root, telemetry=True)
-    feature_store.build_gold(*QATAR, "R", root)
-    return root
+def qatar_lake(openf1_qatar_lake):
+    return openf1_qatar_lake
 
 
 @pytest.fixture(scope="module")
@@ -55,25 +39,21 @@ def test_a_race_is_replayable_once_silver_has_its_telemetry(tmp_path, qatar_lake
     assert lake_session.available(*QATAR, root=qatar_lake)
     assert not lake_session.available(*QATAR, session_type="Q", root=qatar_lake)        # races only so far
     assert not lake_session.available(2024, 12, root=qatar_lake)                         # not in this lake
-    bronze_with_telemetry(tmp_path)
+    openf1_qatar_bronze(tmp_path)
     cleaner.build_silver(*QATAR, "R", str(tmp_path), telemetry=False)
     assert not lake_session.available(*QATAR, root=tmp_path)                             # laps only: nothing to draw
     with pytest.raises(FileNotFoundError, match="not in the lake with telemetry"):
         LakeSession(*QATAR, root=tmp_path)
 
 
-def test_load_session_takes_a_race_from_the_lake_and_never_asks_fastf1(qatar_lake, monkeypatch):
-    def no_fastf1(*args, **kwargs):
-        raise AssertionError("FastF1 must not be asked for a race the lake has")
-
-    monkeypatch.setattr(f1_data.fastf1, "get_session", no_fastf1)
+def test_load_session_takes_a_race_from_the_lake(qatar_lake):
     loaded = f1_data.load_session(*QATAR, "R", lake_root=qatar_lake)
     assert isinstance(loaded, LakeSession) and loaded.event["EventName"] == "Qatar Grand Prix"
 
 
 # --- the attributes the replay reads -----------------------------------------------------------------------------
 
-def test_it_carries_what_the_replay_reads_from_a_fastf1_session(session):
+def test_it_carries_what_the_replay_reads_from_a_session(session):
     assert len(session.drivers) == 20 and session.get_driver("1")["Abbreviation"] == "VER"
     assert "lake" in str(session) and ":" not in str(session)          # its own cache file, and a legal file name
     assert session.event["Location"] == "Lusail" and session.event["EventDate"].strftime("%Y") == "2024"

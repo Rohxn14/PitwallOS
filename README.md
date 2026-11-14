@@ -202,8 +202,8 @@ fixes it (thanks to @el-mandaloriano, #12).
 
 ```
 main.py                  entry point: session picker, then Replay or Analyze
-src/pipeline/            the data lake: extractor and OpenF1 (Bronze), cleaner (Silver), feature store (Gold),
-                         telemetry clock and quality report, contracts, backfill
+src/pipeline/            the data lake: OpenF1 client, Bronze and translation, cleaner (Silver), feature store (Gold),
+                         telemetry quality report, contracts, backfill
 src/analytics/           lap selection, neutralised periods, pit stops, tyre wear, dirty air, undercuts, race report
 src/models/              the evaluation harness, the four pace models, the 2025 test
 src/gui/                 session picker, Analyze window and its charts, insights menu
@@ -219,8 +219,8 @@ docs/                    developer's guides, a catalogue of F1 strategies, this 
 - **[Tom Shaw](https://tomshaw.dev)** created [F1 Race Replay](https://github.com/IAmTomShaw/f1-race-replay), the replay, track map, insights menu and
   telemetry stream this project is built on. Its contributors are listed in [contributors.md](./contributors.md), and its roadmap is kept in
   [docs/upstream_roadmap.md](./docs/upstream_roadmap.md).
-- **[FastF1](https://github.com/theOehrly/Fast-F1)** made F1's timing data accessible, and supplied this project's lap data until October 2026;
-  it is being removed.
+- **[FastF1](https://github.com/theOehrly/Fast-F1)** supplied this project's lap data until October 2026, and its table layout is still what the
+  pipeline's cleaner reads. It is no longer a dependency.
 - **[MultiViewer](https://multiviewer.app)** provides each circuit's map rotation and corner numbers.
 - **[OpenF1](https://openf1.org)** provides all the data (laps, pit stops, Race Control, results, telemetry), under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). The charts on this page and the
   test fixtures in `tests/fixtures/openf1/` are derived from it and shared under the same licence, for non-commercial use.

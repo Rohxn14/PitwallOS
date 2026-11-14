@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from src.pipeline import lake, openf1_translate
-from src.pipeline.openf1_translate import SESSION_STARTED, seconds_since
+from src.pipeline.openf1_translate import SESSION_STARTED
 from src.pipeline.telemetry_clock import LATER_LAP_LAG_SEC, NO_READING, utc
 
 SESSION_TITLES = {"Q": "Qualifying", "SQ": "Sprint Qualifying"}

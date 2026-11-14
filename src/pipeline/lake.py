@@ -8,11 +8,10 @@ Layout (one folder per session, same shape in every layer):
 
     data/
       bronze/season=2024/round=12/session=R/
-          laps.parquet  car_telemetry.parquet  pos_telemetry.parquet
-          weather.parquet  track_status.parquet  race_control.parquet
-          results.parquet  session_status.parquet  _manifest.json
+          openf1_laps.parquet  openf1_stints.parquet  openf1_pit.parquet  openf1_race_control.parquet  ...
+          openf1_car_data.parquet  openf1_location.parquet  _manifest.json
       silver/season=2024/round=12/session=R/
-          laps.parquet  telemetry.parquet
+          laps.parquet  telemetry.parquet  results.parquet
       gold/season=2024/round=12/session=R/
           lap_features.parquet
       reports/
@@ -21,15 +20,13 @@ Layout (one folder per session, same shape in every layer):
           calendar_2024.json      the season's race weekends (src/lib/race_calendar.py)
           circuit_150_2024.json   a circuit as MultiViewer describes it: rotation, corners
 
-A Bronze built from OpenF1 alone (src/pipeline/openf1_bronze.py; manifest "source": "openf1") holds OpenF1's
-tables as delivered instead, one per endpoint, named openf1_<endpoint>: openf1_laps, openf1_stints, openf1_pit,
-openf1_race_control, openf1_car_data, ... (openf1_table()).
+Bronze holds OpenF1's tables as delivered, one per endpoint, named openf1_<endpoint> (openf1_table();
+src/pipeline/openf1_bronze.py; manifest "source": "openf1"). session=R is a race, S a sprint, Q qualifying, SQ sprint
+qualifying; only races and sprints go on to Silver and Gold.
 
-Bronze telemetry (car_telemetry, pos_telemetry) is optional: a race ingested
-laps only has no telemetry files, and its manifest says "telemetry": false.
-Since F1 locked its timing archive (October 2026) telemetry can also come from
-OpenF1, added to a laps-only Bronze as delivered: openf1_car_data,
-openf1_location, openf1_laps (src/pipeline/openf1.py; manifest "openf1").
+Until November 2026 Bronze came from FastF1: laps, weather, track_status, results ... as FastF1's own tables. That
+shape is still what Silver's cleaner reads (openf1_translate.py produces it from OpenF1's tables), and the test
+fixtures in tests/fixtures/lake are Bronze of that kind: a manifest without "source" marks one.
 """
 
 from __future__ import annotations
@@ -53,11 +50,10 @@ LAYERS = (BRONZE, SILVER, GOLD)
 
 MANIFEST_NAME = "_manifest.json"
 GOLD_TABLE = "lap_features"
-BRONZE_TELEMETRY_TABLES = ("car_telemetry", "pos_telemetry")
-BRONZE_OPENF1_TABLES = ("openf1_car_data", "openf1_location", "openf1_laps")   # the same feed, from OpenF1
-FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from (and, as the manifest's "source", its Bronze)
-SILVER_RESULTS_TABLE = "results"       # the classification, written to Silver when Bronze is OpenF1's (FastF1's is in Bronze)
-BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
+BRONZE_OPENF1_TABLES = ("openf1_car_data", "openf1_location", "openf1_laps")   # what Silver telemetry is built from
+OPENF1 = "openf1"                      # the manifest's "source" of a Bronze built from OpenF1, and its telemetry's
+SILVER_RESULTS_TABLE = "results"       # the classification, translated from OpenF1's session_result
+BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, in a FastF1-shaped Bronze (the test fixtures)
 REPORTS_DIR = "reports"
 REFERENCE_DIR = "reference"      # small facts fetched once and kept: the calendar, the circuits (JSON)
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
@@ -87,7 +83,8 @@ def openf1_table(endpoint: str) -> str:
 
 
 def results_path(year: int, round_number: int, session: str = "R", root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
-    """The classification in FastF1's shape: Silver's, translated from OpenF1, or else the FastF1 Bronze's own."""
+    """The classification in FastF1's shape: Silver's, translated from OpenF1; for a FastF1-shaped Bronze (the test
+    fixtures), that Bronze's own."""
     silver = table_path(SILVER, SILVER_RESULTS_TABLE, year, round_number, session, root)
     return silver if silver.exists() else table_path(BRONZE, "results", year, round_number, session, root)
 
@@ -167,13 +164,10 @@ def has_bronze(year: int, round_number: int, session: str = "R", root: PathLike 
 
 def bronze_telemetry_source(year: int, round_number: int, session: str = "R",
                             root: PathLike = DEFAULT_LAKE_ROOT) -> Optional[str]:
-    """Where Bronze's car and position telemetry came from: FASTF1, OPENF1, or None (laps only).
-    FastF1's own tables win when both are there."""
+    """Where Bronze's car and position telemetry came from: OPENF1, or None (laps only)."""
     def has(tables: Tuple[str, ...]) -> bool:
         return all(table_path(BRONZE, t, year, round_number, session, root).exists() for t in tables)
-    if has(BRONZE_TELEMETRY_TABLES):
-        return FASTF1
-    # The manifest is rewritten last (openf1.add_telemetry): tables without its "openf1" entry are a crash's leftovers.
+    # The manifest is written last: tables without its "openf1" entry are a crash's leftovers.
     if (has(BRONZE_OPENF1_TABLES) and has_bronze(year, round_number, session, root)
             and OPENF1 in read_manifest(year, round_number, session, root)):
         return OPENF1
@@ -182,13 +176,13 @@ def bronze_telemetry_source(year: int, round_number: int, session: str = "R",
 
 def bronze_has_telemetry(year: int, round_number: int, session: str = "R",
                          root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
-    """True if Bronze holds car and position telemetry from either source (False for a laps-only ingestion)."""
+    """True if Bronze holds car and position telemetry (False for a laps-only ingestion)."""
     return bronze_telemetry_source(year, round_number, session, root) is not None
 
 
 def bronze_has_pit_stops(year: int, round_number: int, session: str = "R",
                          root: PathLike = DEFAULT_LAKE_ROOT) -> bool:
-    """True if Bronze holds F1's pit-stop record (the manifest's "pit_stops" says why not, if not)."""
+    """True if a FastF1-shaped Bronze (the test fixtures) holds F1's pit-stop record."""
     return table_path(BRONZE, BRONZE_PIT_STOPS_TABLE, year, round_number, session, root).exists()
 
 

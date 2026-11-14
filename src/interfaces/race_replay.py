@@ -375,8 +375,6 @@ class F1RaceReplayWindow(arcade.Window):
         if session is not None and hasattr(session, 'laps'):
             try:
                 import pandas as pd
-                import fastf1._api as ffapi
-                import fastf1.utils as ffutils
                 from src.lib.tyres import get_tyre_compound_int
                 result = {}
                 for _, row in session.laps.iterrows():
@@ -471,10 +469,7 @@ class F1RaceReplayWindow(arcade.Window):
                         classified_fallback,
                     )
                     try:
-                        if hasattr(session, "timing_stream"):      # a race from the lake: OpenF1's order and gaps
-                            stream_data = session.timing_stream()
-                        else:
-                            _, stream_data, _ = ffapi._extended_timing_data(session.api_path)
+                        stream_data = session.timing_stream()      # OpenF1's official order and gaps
                         required_stream_cols = {"Driver", "Time", "Position", "GapToLeader", "IntervalToPositionAhead"}
                         missing_stream_cols = required_stream_cols.difference(stream_data.columns)
                         if missing_stream_cols:
@@ -537,10 +532,10 @@ class F1RaceReplayWindow(arcade.Window):
                             upper_text = gap_text.upper()
                             if upper_text.startswith("LAP") or upper_text.endswith(" L") or upper_text.endswith("L"):
                                 return 0.0 if leader_row else None
-                            gap_td = ffutils.to_timedelta(gap_text)
-                            if gap_td is not None:
-                                return float(gap_td.total_seconds())
-                            return None
+                            try:                               # "+1.234": seconds behind
+                                return float(gap_text.lstrip("+"))
+                            except ValueError:
+                                return None
 
                         lap_match_data = {}
                         for code, entries in result.items():

@@ -1,12 +1,9 @@
 """
 How complete and how trustworthy each race's telemetry is (src/pipeline/telemetry_quality.py) - Phase 5 step 5.0
 
-One row per race, from Silver telemetry (the 10 Hz grid), Silver laps and Bronze (the manifest, F1's timing loop
-speeds, OpenF1's lap table). Every Phase 5 step builds on these samples, so before any of them is trusted we measure:
+One row per race, from Silver telemetry (the 10 Hz grid), Silver laps and Bronze's manifest. Every Phase 5 step builds on these samples, so before any of them is trusted we measure:
 
     coverage    drivers who completed a lap / drivers with telemetry (who is missing, by car number)
-    clock       where the samples came from (FastF1 or OpenF1); for OpenF1 the clock's report, recomputed from Bronze
-                (telemetry_clock.session_offset): which estimate (lap 1 or the later laps), how far apart they were
     holes       ticks inside a hole (source samples more than 2 s apart: Silver's is_data_gap) as a share of the RACING
                 ticks: outside red-flag laps (while the race is stopped the cars sit in the pit lane and send nothing)
                 and outside the lap a car stopped on (a driver's last lap without a lap time: Russell, Australia 2023,
@@ -17,10 +14,6 @@ speeds, OpenF1's lap table). Every Phase 5 step builds on these samples, so befo
                 full laps more than 2 % away from it (a lap is a lap: they should agree)
     speed vs    the same lap measured a second, independent way: the path drawn by the position stream (its own
     position    receiver). Speed integrated / path length, median over full laps: ~1.00 if both streams are right
-    line speed  the car's own speed at the tick nearest the end of each lap minus the speed F1's timing loop measured at
-                the line (Bronze SpeedFL). Its median is a steady OFFSET per circuit (-1 to +12 km/h in 2023-2024: the
-                loop is not exactly on the line); what is checked is how STEADY it is lap to lap (interquartile range):
-                0.9-2.8 km/h in the 44 sound races of 2023-2024, over 100 km/h where the clock was minutes out
     finish line where the cars are, by the map, when the lap table says they cross the line (median x, y of the
                 lap ends, pit laps left out), measured FROM A LANDMARK the clock cannot move: the slowest point of the
                 lap (median over clean laps of where each lap's speed is lowest: a hairpin or chicane). The line does
@@ -59,7 +52,6 @@ MIN_FULL_LAP_SHARE = 0.95    # of clean laps
 LENGTH_TOLERANCE = 0.02      # a full lap this far from the race's median length counts as off
 MAX_OFF_LENGTH_SHARE = 0.01  # of full laps
 SPEED_POSITION_BAND = (0.99, 1.01)
-MAX_LINE_SPEED_IQR_KMH = 5.0
 MAX_LINE_OFFSET_M = 15.0
 
 
@@ -99,14 +91,6 @@ def at_lap_ends(tel: pd.DataFrame, ends: pd.DataFrame, columns: Sequence[str]) -
                          by="driver_number", direction="nearest", tolerance=1.0 / HZ)
 
 
-def line_speeds(tel: pd.DataFrame, bronze_laps: pd.DataFrame) -> pd.Series:
-    """Telemetry speed minus F1's timing-loop speed at the line (km/h), one value per lap the loop measured."""
-    loop = bronze_laps[["DriverNumber", "LapNumber", "Time", "SpeedFL"]].dropna()
-    loop = loop.assign(driver_number=loop["DriverNumber"].astype(str), lap_end=loop["Time"].dt.total_seconds())
-    both = at_lap_ends(tel, loop, ["speed_kmh"])
-    return (both["speed_kmh"] - both["SpeedFL"]).dropna()
-
-
 def finish_line(tel: pd.DataFrame, laps: pd.DataFrame) -> Dict[str, float]:
     """Where the cars are (m) at the lap ends of laps that are not pit laps: the median point and the median distance
     of the lap ends from it."""
@@ -143,25 +127,14 @@ def slowest_point(tel: pd.DataFrame, laps: pd.DataFrame) -> Dict[str, float]:
             "slowest_spread_m": float(np.median(np.hypot(lows["x"] - x, lows["y"] - y))) / 10}
 
 
-def openf1_clock(year: int, round_number: int, session: str, root: str) -> Dict[str, Any]:
-    """The clock report for an OpenF1 race, recomputed from Bronze (telemetry_clock, as Silver did)."""
-    from src.pipeline import telemetry_clock
-
-    def bronze(table: str) -> pd.DataFrame:
-        return lake.read_table(lake.table_path(lake.BRONZE, table, year, round_number, session, root))
-    return telemetry_clock.session_offset(bronze(lake.BRONZE_OPENF1_TABLES[2]), bronze("laps"))[1]
-
-
 def race_quality(year: int, round_number: int, session: str = "R", root: str = lake.DEFAULT_LAKE_ROOT) -> Dict[str, Any]:
     """One report row for a race whose Silver telemetry exists (the finish line is compared across races later)."""
     manifest = lake.read_manifest(year, round_number, session, root)
     source = lake.bronze_telemetry_source(year, round_number, session, root)
     row: Dict[str, Any] = {"season": int(year), "round": int(round_number), "event_name": manifest.get("event_name"),
                            "location": manifest.get("location"), "source": source}
-    openf1_only = manifest.get("source") == lake.OPENF1       # Bronze built from OpenF1 alone: laps and telemetry share
-    if source == lake.OPENF1:                                 # one clock (openf1_translate), there is nothing to line up
+    if source == lake.OPENF1:
         row["openf1_session_key"] = manifest[lake.OPENF1]["session_key"]
-        row.update({"clock_method": "session started"} if openf1_only else openf1_clock(year, round_number, session, root))
 
     tel = lake.read_table(lake.table_path(lake.SILVER, "telemetry", year, round_number, session, root))
     laps = lake.read_table(lake.table_path(lake.SILVER, "laps", year, round_number, session, root))
@@ -188,15 +161,6 @@ def race_quality(year: int, round_number: int, session: str = "R", root: str = l
                off_length_share=float(off.mean()) if len(full) else np.nan,
                speed_to_position=float((full["length_m"] / full["path_m"]).median()) if len(full) else np.nan)
 
-    if openf1_only:                       # OpenF1 has no speed at the line: the check cannot be made, and says so (0 laps)
-        diff = pd.Series(dtype=float)
-    else:
-        bronze_laps = lake.read_table(lake.table_path(lake.BRONZE, "laps", year, round_number, session, root),
-                                      columns=["DriverNumber", "LapNumber", "Time", "SpeedFL"])
-        diff = line_speeds(tel, bronze_laps)
-    row.update(line_speed_laps=int(len(diff)),
-               line_speed_offset_kmh=float(diff.median()) if len(diff) else np.nan,
-               line_speed_iqr_kmh=float(diff.quantile(0.75) - diff.quantile(0.25)) if len(diff) else np.nan)
     row.update(finish_line(tel, laps))
     row.update(slowest_point(tel, laps))
 
@@ -220,8 +184,6 @@ def problems(row: Dict[str, Any]) -> List[str]:
     low, high = SPEED_POSITION_BAND
     if not low <= row["speed_to_position"] <= high:
         out.append(f"speed and position disagree ({row['speed_to_position']:.3f})")
-    if row.get("line_speed_laps", 1) > 0 and not row["line_speed_iqr_kmh"] <= MAX_LINE_SPEED_IQR_KMH:
-        out.append(f"line speed unsteady (IQR {row['line_speed_iqr_kmh']:.1f} km/h)")
     return out
 
 
@@ -263,15 +225,11 @@ def describe(report: pd.DataFrame) -> str:
     if "racing_hole_share" in report:
         def pct(col, q):
             return 100 * report[col].quantile(q)
-        lines += [f"Clock: {report.get('clock_method', pd.Series(dtype=str)).value_counts().to_dict()}.",
-                  f"Holes outside red flags: median {pct('racing_hole_share', 0.5):.3f} % of ticks, max "
+        lines += [f"Holes outside red flags: median {pct('racing_hole_share', 0.5):.3f} % of ticks, max "
                   f"{pct('racing_hole_share', 1):.3f} %; with red flags max {pct('hole_share', 1):.2f} %.",
                   f"Clean laps complete: median {pct('full_lap_share', 0.5):.1f} %, min {pct('full_lap_share', 0):.1f} %.",
                   f"Speed / position length: median {report['speed_to_position'].median():.4f} "
                   f"({report['speed_to_position'].min():.4f}-{report['speed_to_position'].max():.4f}).",
-                  f"Line speed: offset {report['line_speed_offset_kmh'].min():.1f} to "
-                  f"{report['line_speed_offset_kmh'].max():.1f} km/h, steadiness (IQR) median "
-                  f"{report['line_speed_iqr_kmh'].median():.1f}, max {report['line_speed_iqr_kmh'].max():.1f}.",
                   ("Finish line from the circuit's other races: " + (
                       f"median {report['line_offset_m'].median():.1f} m, max {report['line_offset_m'].max():.1f} m."
                       if report["line_offset_m"].notna().any() else "no circuit has two races to compare.")),

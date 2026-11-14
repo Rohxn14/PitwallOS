@@ -4,7 +4,7 @@ lake_qualifying.py: a qualifying session for the replay, read from the lake inst
 The lake is a temporary one holding real OpenF1 data: Baku 2026 qualifying (tests/fixtures/openf1/
 baku_2026_qualifying): every small table as delivered, and the telemetry of three drivers' fastest laps (RUS, pole;
 LEC, second; STR, out in Q1). The facts checked are the official ones: Russell's pole lap of 1:42.526, the three
-parts' start and finish, Stroll's exit in Q1. No network, no real lake, and FastF1 is never asked.
+parts' start and finish, Stroll's exit in Q1. No network, no real lake.
 """
 
 import shutil
@@ -135,11 +135,7 @@ def test_the_qualifying_replays_data_is_built_from_the_lake(session):
 
 # --- where the session comes from -------------------------------------------------------------------------------------------
 
-def test_load_session_takes_qualifying_from_the_lake_and_never_asks_fastf1(baku_lake, monkeypatch):
-    def no_fastf1(*args, **kwargs):
-        raise AssertionError("FastF1 must not be asked for a session the lake has")
-
-    monkeypatch.setattr(f1_data.fastf1, "get_session", no_fastf1)
+def test_load_session_takes_qualifying_from_the_lake(baku_lake):
     loaded = f1_data.load_session(*BAKU, "Q", lake_root=baku_lake)
     assert isinstance(loaded, LakeQualifying) and "Qualifying - lake" in str(loaded) and ":" not in str(loaded)
     assert lake_qualifying.available(*BAKU, "Q", baku_lake) and not lake_qualifying.available(*BAKU, "SQ", baku_lake)

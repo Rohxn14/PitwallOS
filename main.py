@@ -1,4 +1,4 @@
-from src.f1_data import get_race_telemetry, enable_cache, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints, example_lap_telemetry
+from src.f1_data import get_race_telemetry, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints, example_lap_telemetry
 from src.run_session import run_arcade_replay, launch_insights_menu
 from src.interfaces.qualifying import run_qualifying_replay
 import sys
@@ -6,12 +6,8 @@ from src.cli.race_selection import cli_load
 from src.gui.race_selection import RaceSelectionWindow
 from PySide6.QtWidgets import QApplication
 from src.lib.season import get_season
-import logging
 
 def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True):
-  # Enable the FastF1 cache BEFORE the first load. Loading first made FastF1 fall back to its
-  # default cache (%LOCALAPPDATA%\Temp\fastf1), so every race was downloaded and stored twice.
-  enable_cache()
 
   print(f"Loading F1 {year} Round {round_number} Session '{session_type}'")
   session = load_session(year, round_number, session_type)
@@ -43,32 +39,22 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
 
     # Get example lap for track layout
     # Qualifying lap preferred for DRS zones (fallback to fastest race lap (no DRS data))
+    # The track's outline and DRS zones: the pole lap if this weekend's qualifying is in the lake (it is driven
+    # flat out, with DRS), else the fastest race lap. Qualifying is not downloaded just for this.
     example_lap = None
-    from_lake = hasattr(session, "example_lap")     # a race from the lake draws its track from its own fastest lap
-    
     try:
-        if from_lake:
-            raise LookupError("the lake has races only so far")
-        print("Attempting to load qualifying session for track layout...")
-        quali_session = load_session(year, round_number, 'Q')
-        if quali_session is not None and len(quali_session.laps) > 0:
-            fastest_quali = quali_session.laps.pick_fastest()
-            if fastest_quali is not None:
-                quali_telemetry = fastest_quali.get_telemetry()
-                if 'DRS' in quali_telemetry.columns:
-                    example_lap = quali_telemetry
-                    print(f"Using qualifying lap from driver {fastest_quali['Driver']} for DRS Zones")
+        from src.lib import lake_qualifying
+        if lake_qualifying.available(year, round_number, 'Q'):
+            example_lap = lake_qualifying.LakeQualifying(year, round_number, 'Q').example_lap()
+            print('Track layout from the pole lap')
     except Exception as e:
-        print(f"Could not load qualifying session: {e}")
-
-    # fallback: Use fastest race lap
+        print(f'Could not read the qualifying session for the track layout: {e}')
     if example_lap is None:
         example_lap = example_lap_telemetry(session)
-        if example_lap is not None:
-            print("Using fastest race lap (DRS detection may use speed-based fallback)")
-        else:
-            print("Error: No valid laps found in session")
+        if example_lap is None:
+            print('Error: No valid laps found in session')
             return
+        print('Track layout from the fastest race lap')
 
     drivers = session.drivers
 
@@ -115,8 +101,6 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
 
 if __name__ == "__main__":
 
-  if "--verbose" not in sys.argv:# fastf1 logging is disabled by default
-    logging.getLogger("fastf1").setLevel(logging.CRITICAL)
 
   if "--cli" in sys.argv:
     # Run the CLI

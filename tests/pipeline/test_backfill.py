@@ -9,11 +9,11 @@ download (from OpenF1) is faked, to fail, so retries and failure isolation can b
 import pandas as pd
 import pytest
 
-from src.pipeline import backfill, contracts, extractor, lake, openf1, openf1_bronze
+from src.pipeline import backfill, contracts, lake, openf1, openf1_bronze
 from src.pipeline.backfill import FAILED, OK, RetryPolicy
 
 BRITISH, QATAR = 12, 23
-QUICK = RetryPolicy(waits_sec=(1.0, 2.0), rate_limit_wait_sec=50.0, rate_limit_max_waits=2)
+QUICK = RetryPolicy(waits_sec=(1.0, 2.0))
 
 
 @pytest.fixture
@@ -25,16 +25,7 @@ def downloads(monkeypatch):
         calls.append(round_number)
         raise ConnectionError("no network in tests")
 
-    def fake_openf1(year, round_number, session, root):
-        calls.append(("openf1", round_number))
-        raise ConnectionError("no network in tests")
-
-    def no_fastf1(*args, **kwargs):
-        raise AssertionError("a race is never downloaded through FastF1 any more")
-
     monkeypatch.setattr(openf1_bronze, "ingest_session", fake_ingest)
-    monkeypatch.setattr(extractor, "extract_session", no_fastf1)
-    monkeypatch.setattr(openf1, "add_telemetry", fake_openf1)
     return calls
 
 
@@ -92,66 +83,11 @@ def test_rebuild_redoes_silver_and_gold_from_bronze_offline(golden_lake, downloa
     assert downloads == []
 
 
-def test_wanting_telemetry_from_a_laps_only_bronze_means_downloading_it_from_openf1(golden_lake, downloads):
-    # F1's archive is locked (October 2026): the telemetry comes from OpenF1, added to the Bronze laps we have;
-    # FastF1 is not asked to download the race again.
-    report, _ = run(golden_lake, [BRITISH], telemetry=True)
-    assert downloads == [("openf1", BRITISH)] * 3            # tried, not silently built without telemetry
+def test_wanting_telemetry_a_bronze_lacks_means_asking_openf1_for_it(golden_lake, downloads):
+    report, _ = run(golden_lake, [BRITISH], telemetry=True)       # the fixture Bronze holds laps only
+    assert downloads == [BRITISH] * 3                             # tried, not silently built without telemetry
     assert report.loc[BRITISH, "status"] == FAILED and report.loc[BRITISH, "stage"] == "bronze"
-    assert report.loc[BRITISH, "source"] == backfill.ADDED_OPENF1
-
-
-def test_once_openf1_delivered_silver_is_built_with_telemetry(golden_lake, monkeypatch):
-    added, built = [], []
-    monkeypatch.setattr(openf1, "add_telemetry", lambda year, rnd, session, root: added.append(rnd))
-    monkeypatch.setattr(backfill, "build_silver", lambda year, rnd, session, root, telemetry: built.append(telemetry))
-    monkeypatch.setattr(backfill, "build_gold", lambda year, rnd, session, root: None)
-    report, _ = run(golden_lake, [QATAR], telemetry=True)
-    assert added == [QATAR] and built == [True]
-    assert report.loc[QATAR, "source"] == backfill.ADDED_OPENF1
-
-
-# --- F1's pit-stop record added to older Bronze ----------------------------------------
-
-def forget_pit_stops(lake_root, round_number):
-    """Make a fixture race look like Bronze ingested before the extractor fetched F1's pit-stop record."""
-    manifest = lake.read_manifest(2024, round_number, root=lake_root)
-    del manifest["pit_stops"]
-    lake.write_manifest(manifest, 2024, round_number, root=lake_root)
-
-
-def test_pit_stops_option_adds_the_record_only_where_it_was_never_checked(golden_lake, downloads, monkeypatch):
-    added = []
-
-    def fake_add(year, round_number, session, root):
-        added.append(round_number)                              # the Qatar fixture already holds the file
-        manifest = lake.read_manifest(year, round_number, session, root)
-        lake.write_manifest({**manifest, "pit_stops": extractor.PUBLISHED}, year, round_number, session, root)
-        return {"pit_stops": extractor.PUBLISHED, "rows": 27}
-
-    monkeypatch.setattr(extractor, "add_pit_stops", fake_add)
-    forget_pit_stops(golden_lake, QATAR)
-    run(golden_lake, [BRITISH, QATAR])                          # without the option: nothing is downloaded
-    assert added == [] and downloads == []
-
-    report, _ = run(golden_lake, [BRITISH, QATAR], pit_stops=True)
-    assert added == [QATAR] and downloads == []                 # one small download; British was checked before
-    assert report.loc[QATAR, "source"] == backfill.ADDED_PIT_STOPS and report.loc[BRITISH, "source"] == backfill.ALREADY_BUILT
-    assert report.loc[QATAR, "f1_pit_stop_record"] == "published" and report.loc[QATAR, "pit_stop_times"] == 27
-    assert report.loc[BRITISH, "f1_pit_stop_record"] == "not published" and report.loc[BRITISH, "pit_stop_times"] == 0
-
-    run(golden_lake, [BRITISH, QATAR], pit_stops=True)
-    assert added == [QATAR]                                     # resumable: never asked twice
-
-
-def test_a_failed_pit_stop_download_is_retried_then_reported(golden_lake, downloads, monkeypatch):
-    def broken(*args):
-        raise ConnectionError("no network in tests")
-
-    monkeypatch.setattr(extractor, "add_pit_stops", broken)
-    forget_pit_stops(golden_lake, QATAR)
-    report, waits = run(golden_lake, [QATAR], pit_stops=True)
-    assert waits == [1.0, 2.0] and report.loc[QATAR, "status"] == FAILED and report.loc[QATAR, "stage"] == "bronze"
+    assert report.loc[BRITISH, "source"] == backfill.FROM_OPENF1
 
 
 # --- isolated and retried -----------------------------------------------------------
@@ -163,22 +99,6 @@ def test_a_failing_race_does_not_stop_the_others(golden_lake, downloads):
     assert report.loc[1, "error"] == "ConnectionError: no network in tests"
     assert report.loc[BRITISH, "status"] == OK
     assert downloads == [1, 1, 1] and waits == [1.0, 2.0]    # first try + one retry per wait
-
-
-def test_fastf1_rate_limit_gets_the_long_wait():
-    """Still used for F1's pit-stop record of an old FastF1 Bronze (extractor.add_pit_stops)."""
-    calls, waits = [], []
-
-    def download():
-        calls.append(1)
-        if len(calls) <= 2:
-            raise extractor.ExtractionError("FastF1 could not load part of 2024 round 1 'R': Failed to load "
-                                            "weather data! (RateLimitExceededError: any API: 500 calls/h)")
-        raise ConnectionError("down")
-
-    with pytest.raises(ConnectionError, match="down"):
-        backfill.with_retry(download, 1, policy=QUICK, sleep=waits.append, say=lambda text: None)
-    assert waits == [50.0, 50.0, 1.0, 2.0]                   # two long waits, then the ordinary ones
 
 
 def test_a_contract_failure_is_reported_at_its_stage_and_never_retried(golden_lake, downloads, monkeypatch):

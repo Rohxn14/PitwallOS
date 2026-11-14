@@ -1,6 +1,5 @@
 # Lower bounds are the versions this project was built and tested on.
 # Upper bounds stop a future major release from silently changing behaviour.
-fastf1>=3.6,<4
 pandas>=2.2,<3
 numpy>=1.26
 pyarrow>=17

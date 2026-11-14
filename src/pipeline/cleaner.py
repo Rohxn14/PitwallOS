@@ -539,11 +539,10 @@ def telemetry_tables(bronze: Callable[[str], pd.DataFrame], year: int, round_num
                      lake_root: str, lights_out_utc: Optional[pd.Timestamp] = None
                      ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """
-    Bronze's car and position telemetry in FastF1's shape, + where it came from: FastF1's own tables, or (since F1
-    locked its archive, October 2026) OpenF1's tables put on the session clock by telemetry_clock.py.
+    Bronze's car and position telemetry (OpenF1's tables) in the shape the resampler reads, on the session clock.
 
-    lights_out_utc: for a Bronze built from OpenF1 alone, the instant session time counts from (the translation
-    found it); the laps are on that clock already, so the telemetry needs no clock of its own.
+    lights_out_utc: the instant session time counts from (openf1_translate found it; the laps are on that clock
+    already). A FastF1-shaped Bronze (the test fixtures) has no such instant and no telemetry path.
     """
     source = lake.bronze_telemetry_source(year, round_number, session, lake_root)
     if source == lake.OPENF1 and lights_out_utc is not None:
@@ -551,16 +550,8 @@ def telemetry_tables(bronze: Callable[[str], pd.DataFrame], year: int, round_num
         return (telemetry_clock.car_samples(bronze("openf1_car_data"), lights_out_utc),
                 telemetry_clock.position_samples(bronze("openf1_location"), lights_out_utc),
                 {"telemetry_source": source, "t0_utc": str(lights_out_utc)})
-    if source == lake.FASTF1:
-        return bronze("car_telemetry"), bronze("pos_telemetry"), {"telemetry_source": source}
-    if source == lake.OPENF1:
-        from src.pipeline import telemetry_clock   # Phase 5, typed by Rohan: imported only when it is needed
-        t0, clock = telemetry_clock.session_offset(bronze("openf1_laps"), bronze("laps"))
-        car = telemetry_clock.car_samples(bronze("openf1_car_data"), t0)
-        pos = telemetry_clock.position_samples(bronze("openf1_location"), t0)
-        return car, pos, {"telemetry_source": source, **clock}
-    raise ValueError(f"Bronze for {year} round {round_number} has no telemetry (laps only): add it first, e.g. "
-                     "python -m src.pipeline.backfill --season YEAR --rounds N --telemetry")
+    raise ValueError(f"Bronze for {year} round {round_number} has no telemetry Silver can use (laps only, or not a "
+                     "Bronze from OpenF1): python -m src.pipeline.openf1_bronze --season YEAR --rounds N adds it")
 
 
 # --- orchestration ---------------------------------------------------------
@@ -576,8 +567,8 @@ def build_silver(year: int, round_number: int, session: str = "R",
     def bronze(table: str) -> pd.DataFrame:
         return lake.read_table(lake.table_path(lake.BRONZE, table, year, round_number, session, lake_root))
 
-    # A Bronze built from OpenF1 alone holds OpenF1's own tables: the translation turns them into the tables below,
-    # on a clock that starts at lights out. A FastF1 Bronze holds them ready-made.
+    # Bronze holds OpenF1's own tables: the translation turns them into the tables below, on a clock that starts at
+    # lights out. A FastF1-shaped Bronze (the test fixtures) holds them ready-made.
     translated = None
     if manifest.get("source") == lake.OPENF1:
         from src.pipeline import openf1_translate
@@ -585,8 +576,7 @@ def build_silver(year: int, round_number: int, session: str = "R",
         identity["total_laps"] = translated.total_laps
         bronze_laps, weather, pit_stops = translated.laps, translated.weather, translated.pit_stops
     else:
-        # F1's pit-stop record: only for races it was published for, and only in Bronze ingested since the
-        # extractor fetches it (`backfill --pit-stops` adds it to older Bronze). Otherwise the times are unknown.
+        # F1's own pit-stop record, where the fixture has one. Otherwise the times are unknown.
         has_stops = lake.bronze_has_pit_stops(year, round_number, session, lake_root)
         bronze_laps, weather = bronze("laps"), bronze("weather")
         pit_stops = bronze(lake.BRONZE_PIT_STOPS_TABLE) if has_stops else None

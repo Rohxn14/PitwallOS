@@ -1,5 +1,11 @@
 # Phase 5 step 5.0: car telemetry in the lake
 
+> **Read with [openf1_migration.md](openf1_migration.md).** This guide describes the step as it was built in October 2026, when
+> the lap tables still came from FastF1 and only the telemetry from OpenF1. Since November 2026 everything comes from OpenF1:
+> the clock matching described below (`session_offset`, the vote among drivers), `openf1.add_telemetry`, the line-speed
+> check and FastF1's own telemetry tables no longer exist. What it says about the samples, the 10 Hz grid, the holes and
+> the quality checks still holds.
+
 A developer's guide to everything step 5.0 built: what it is for, where the data comes from, every file and function,
 why each piece is built the way it is (and what was tried or rejected, with the measured reasons), the rules it keeps,
 how it is tested, what it measured, and what it does not do yet. Written 2026-10-25.

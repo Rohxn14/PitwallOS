@@ -14,7 +14,6 @@ class SettingsManager:
 
     # Default settings values
     DEFAULTS = {
-        "cache_location": ".fastf1-cache",
         "computed_data_location": "computed_data",
     }
 
@@ -100,16 +99,6 @@ class SettingsManager:
         """Reset all settings to their default values."""
         self._settings = dict(self.DEFAULTS)
         self.save()
-
-    @property
-    def cache_location(self) -> str:
-        """Get the FastF1 cache location."""
-        return self.get("cache_location")
-
-    @cache_location.setter
-    def cache_location(self, value: str) -> None:
-        """Set the FastF1 cache location."""
-        self.set("cache_location", value)
 
     @property
     def computed_data_location(self) -> str:

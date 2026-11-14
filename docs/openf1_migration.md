@@ -4,8 +4,8 @@ A developer's guide to how PitwallOS changed its data source. It is written piec
 
 **Status:** the lake in `data/` is built from OpenF1 alone (90 races, 2023 to 2026), new races are downloaded from OpenF1, and
 the replay reads the lake. Sprints replay from the lake too, and the session picker's calendar and the map's rotation no longer
-need FastF1. Qualifying replays from the lake too. Every session the app can open from 2023 on now comes from OpenF1; FastF1
-is still installed, as the last fallback and for the old lake's code paths. Removing it is the last piece.
+need FastF1. **Finished.** FastF1 is no longer a dependency: it is not imported, not installed, not in `requirements.txt`.
+Everything the app shows comes from OpenF1 through the lake.
 
 ## Why
 
@@ -40,7 +40,7 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 | 5 | The replay from the lake | done |
 | 6 | The calendar and the circuits without FastF1; sprints from OpenF1 | done |
 | 7 | Qualifying from OpenF1 | done |
-| 8 | FastF1 removed | next |
+| 8 | FastF1 removed | done |
 
 ## Decisions so far
 
@@ -571,3 +571,67 @@ official results (pole 1:42.526); the fastest lap by code and by number; a made-
 - Qualifying cannot be analysed, only replayed: it has no Silver.
 - Sprint qualifying is wired and found under both names, but no real session has been downloaded or replayed.
 - The 0.173 s lag of OpenF1's lap stamps was measured on races and is assumed for qualifying.
+
+## Piece 8: FastF1 removed
+
+With every session coming from the lake, FastF1 had no caller left that could succeed. It was removed in one piece, and the
+test suite was then run in an environment where FastF1 is not installed at all.
+
+### What was deleted
+
+| Deleted | What it was |
+|---|---|
+| `src/pipeline/extractor.py` | Bronze from FastF1: loading a session, listening to FastF1's log for hidden failures, F1's pit-stop record |
+| `openf1.find_session`, `drivers_of`, `download`, `add_telemetry`, its command line | adding OpenF1's telemetry to a Bronze whose laps came from FastF1 |
+| `telemetry_clock.session_offset`, `lap_offsets`, `lap_one_vote`, `later_laps`, `ClockError` | matching OpenF1's clock to FastF1's, with a vote among the drivers. One source has one clock: nothing to match |
+| `cleaner.telemetry_tables`' FastF1 branches, `lake.BRONZE_TELEMETRY_TABLES`, `lake.FASTF1` | reading FastF1's own telemetry tables |
+| `telemetry_quality.line_speeds`, `openf1_clock` and the line-speed check | compared the car's speed with F1's speed at the line (`SpeedFL`), which OpenF1 does not carry |
+| the runner's and the backfill's FastF1 paths, `--pit-stops`, `--verbose`, the rate-limit waits | downloading through FastF1, and waiting out FastF1's own hourly cap |
+| `f1_data.enable_cache`, `_process_single_driver`, the FastF1 branches of six functions, the worker processes | the replay's FastF1 path: per-lap telemetry merged in 20 processes |
+| `fastf1._api` and `fastf1.utils` in `race_replay.py` | the timing stream and a gap parser (now three lines) |
+| the "FastF1 Cache Location" setting and its row in the settings dialog | where FastF1 kept its downloads |
+| `tests/pipeline/test_bronze.py`, `test_shared_cache.py`, and the tests of each function above | the suite went from 664 tests to 617 |
+| `fastf1` in `requirements.txt` | the dependency |
+
+36 files changed: about 2,030 lines removed and 370 added.
+
+### What was kept, and why
+
+- **The FastF1 table shape.** `openf1_translate` produces FastF1's lap table because that is what the cleaner reads. The
+  column names (`LapStartTime`, `TrackStatus`, `FastF1Generated`) are now simply the cleaner's input contract.
+- **The fixtures in `tests/fixtures/lake/`.** They are real Bronze in that shape (British, Qatar and Hungary 2024), and the
+  golden tests of Silver, Gold, the analytics and the models are built on them. A manifest without `"source"` marks such a
+  Bronze; the cleaner reads its tables directly. They have no telemetry path any more.
+- **FastF1's samples as a golden fact.** `tests/fixtures/openf1/baku_63_fastf1_*.parquet` are FastF1's own telemetry
+  samples of one car, saved while FastF1 could still load them. A test checks that OpenF1's samples are the same, sample
+  for sample. The proof that the two sources carry one feed stays, without the library.
+- **`LATER_LAP_LAG_SEC = 0.173`.** Measured by the clock-matching code against FastF1; the translation still uses it.
+- **Seasons before 2023 are gone from the app.** OpenF1 starts in 2023. `load_session` says so instead of trying.
+
+### What the replay says when it cannot open a session
+
+`f1_data.load_session` raises `TelemetryNotAvailable` with the reason: the season is before 2023, the kind of session
+cannot be replayed, or the session is not in the lake and the download from OpenF1 failed (with the error).
+
+### Tests
+
+The suite passes with FastF1 uninstalled. `tests/conftest.py` gained `openf1_qatar_lake`, a lake built once per test run from
+OpenF1's real tables for Qatar 2024 (Bronze, Silver with two cars' telemetry, Gold); the tests of Silver telemetry, of the
+telemetry quality report and of the replay adapter share it. `tests/test_load_session.py` was rewritten around the new
+behaviour (6 tests).
+
+## What the migration cost and what it bought
+
+| | Before (October 2026) | After |
+|---|---|---|
+| Source | FastF1, behind a paid login; OpenF1 for telemetry | OpenF1 only, free |
+| Races in the lake | 70 (2023-2025) | 90 (2023-2026) |
+| Can a new race be added? | no | yes, about 3 minutes |
+| Replay | 4 races | every race, sprint and qualifying session from 2023 |
+| Clocks | two, matched by a vote | one, from lights out |
+| Session time zero | FastF1's, about an hour before the start | lights out: a lap's end is the official race time |
+| Seasons before 2023 | in the picker (2018 on), not openable since the login | not offered |
+| Analytics headlines, model scores | - | reproduced (0.355 s against 0.353 s for the best model) |
+
+What it showed about the design: the lake's rule that only Bronze knows the source held. The cleaner, Gold, six analyses
+and four models changed by about ten lines between them.

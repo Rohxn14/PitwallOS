@@ -26,12 +26,6 @@ class FetchScheduleWorker(QThread):
 
     def run(self): #check
         try:
-            # enable cache if available in project
-            try:
-                from src.f1_data import enable_cache
-                enable_cache()
-            except Exception:
-                pass
             events = get_race_weekends_by_year(self.year)
             self.result.emit(events)
         except Exception as e:
@@ -381,7 +375,7 @@ class RaceSelectionWindow(QMainWindow):
         dlg.show()
         QApplication.processEvents()
 
-        # Map label -> fastf1 session type code
+        # Map label -> session code
         session_code = 'R'
         if session_label == "Qualifying":
             session_code = 'Q'
@@ -402,11 +396,6 @@ class RaceSelectionWindow(QMainWindow):
 
             def run(self):
                 try:
-                    try:
-                        from src.f1_data import enable_cache
-                        enable_cache()
-                    except Exception:
-                        pass
                     sess = load_session(self.year, self.round_no, self.session_type)
                     self.result.emit(sess)
                 except Exception as e:

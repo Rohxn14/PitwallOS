@@ -55,7 +55,6 @@ MODULES = [
 
 OPTIONAL_DEPENDENCIES = {
     "arcade",
-    "fastf1",
     "matplotlib",
     "numpy",
     "pandas",

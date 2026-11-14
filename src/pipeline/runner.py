@@ -7,10 +7,9 @@ Runs Bronze -> Silver -> Gold for one session and prints a summary.
     python -m src.pipeline.runner --year 2024 --round 12 --skip-extract   # offline: from Bronze as it is
     python -m src.pipeline.runner --year 2024 --round 12 --no-telemetry   # laps only
 
-Bronze is never downloaded twice: what is there is kept. A race comes from OpenF1 alone, as delivered
-(openf1_bronze.py), because F1's timing archive has needed a login since October 2026 (docs/openf1_migration.md).
-Other sessions (qualifying, sprint) still come through FastF1 until they are moved too. A race already in a Bronze
-from FastF1 keeps it, and gains OpenF1's telemetry if it lacks it. For many races at once, see backfill.py.
+Bronze is never downloaded twice: what is there is kept, and only what it lacks is fetched, from OpenF1
+(openf1_bronze.py; docs/openf1_migration.md has why not FastF1 any more). Races and sprints go through the whole
+pipeline; qualifying stops at Bronze (src/lib/lake_qualifying.py reads it). For many races at once, see backfill.py.
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ from rich.table import Table
 
 from src.pipeline import lake, openf1, openf1_bronze
 from src.pipeline.cleaner import build_silver
-from src.pipeline.extractor import extract_session
 from src.pipeline.feature_store import build_gold
 
 # Windows terminals default to a legacy encoding that cannot print box characters.
@@ -38,14 +36,14 @@ if sys.platform == "win32":
 
 console = Console()
 
-RACE = "R"    # the one kind of session OpenF1's telemetry is added for (openf1.find_session)
+RACE = "R"
 
 
 def _bronze_summary(year: int, round_number: int, session_type: str, lake_root: str) -> dict:
     """The Bronze summary, from the manifest."""
     manifest = lake.read_manifest(year, round_number, session_type, lake_root)
     tables = manifest["tables"]
-    telemetry_tables = lake.BRONZE_TELEMETRY_TABLES + (openf1.CAR_TABLE, openf1.LOCATION_TABLE)
+    telemetry_tables = (openf1.CAR_TABLE, openf1.LOCATION_TABLE)
     lap_table = lake.openf1_table("laps") if manifest.get("source") == lake.OPENF1 else "laps"
     return {
         "status": "skipped",
@@ -63,35 +61,21 @@ def _bronze_summary(year: int, round_number: int, session_type: str, lake_root: 
 def bronze_step(year: int, round_number: int, session_type: str, lake_root: str,
                 skip_extract: bool, telemetry: bool) -> dict:
     """
-    Bronze for one session, downloading only what it lacks. Why not download again on every run, as this did until
-    2026-11: FastF1's tables can no longer be fetched without a login, and a new download rewrites the manifest.
-    A race comes from OpenF1 alone; other sessions from FastF1 (laps and telemetry).
+    Bronze for one session, downloading only what it lacks (openf1_bronze.ingest_session decides what that is).
+    A Bronze that did not come from OpenF1 (the FastF1-shaped test fixtures) is used as it is.
     """
     if skip_extract:
         return _bronze_summary(year, round_number, session_type, lake_root)
-
+    if session_type not in openf1_bronze.RACE_LIKE:
+        raise ValueError(f"session '{session_type}': only races and sprints ({', '.join(openf1_bronze.RACE_LIKE)}) go "
+                         "through the pipeline. Qualifying is ingested by openf1_bronze and read from Bronze.")
     start = time.time()
-    downloaded = None
-    if session_type in openf1_bronze.RACE_LIKE and (not lake.has_bronze(year, round_number, session_type, lake_root)
-                                 or lake.read_manifest(year, round_number, session_type, lake_root).get("source")
-                                 == lake.OPENF1):
-        out = openf1_bronze.ingest_session(year, round_number, session_type, lake_root, telemetry=telemetry)
-        summary = _bronze_summary(year, round_number, session_type, lake_root)
-        summary.update(status=out["status"], elapsed_sec=round(time.time() - start, 2))
-        return summary
-    if not lake.has_bronze(year, round_number, session_type, lake_root):
-        downloaded = extract_session(year, round_number, session_type, lake_root, telemetry=telemetry)
-    if telemetry and not lake.bronze_has_telemetry(year, round_number, session_type, lake_root):
-        if session_type != RACE:
-            raise ValueError(f"Bronze for {year} round {round_number} '{session_type}' has no telemetry, and OpenF1's "
-                             "is only added for races. Add --no-telemetry.")
-        openf1.add_telemetry(year, round_number, session_type, lake_root)
-
+    there = lake.has_bronze(year, round_number, session_type, lake_root)
+    if there and lake.read_manifest(year, round_number, session_type, lake_root).get("source") != lake.OPENF1:
+        return _bronze_summary(year, round_number, session_type, lake_root)
+    out = openf1_bronze.ingest_session(year, round_number, session_type, lake_root, telemetry=telemetry)
     summary = _bronze_summary(year, round_number, session_type, lake_root)
-    summary["elapsed_sec"] = round(time.time() - start, 2)
-    if downloaded is not None:
-        summary["status"] = downloaded.get("status", "ok")
-        summary["fastf1_warnings"] = downloaded.get("fastf1_warnings", [])
+    summary.update(status=out["status"], elapsed_sec=round(time.time() - start, 2))
     return summary
 
 
@@ -145,8 +129,6 @@ def run_pipeline(year: int = 2024, round_number: int = 12, session_type: str = R
                   f"{report['pit_ended']} ended in the pits, {report['pit_unknown']} unknown.")
     for warning in bronze.get("warnings", []):
         console.print(f"[yellow]Bronze warning:[/yellow] {warning}")
-    for warning in bronze.get("fastf1_warnings", []):
-        console.print(f"[yellow]FastF1 warning:[/yellow] {warning}")
     console.print(f"[bold green]Done.[/bold green] Gold features: {gold['file_path']}")
 
     return {"bronze": bronze, "silver": silver, "gold": gold}
@@ -156,7 +138,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the PitwallOS data pipeline for one session")
     parser.add_argument("--year", type=int, default=2024)
     parser.add_argument("--round", type=int, default=12)
-    parser.add_argument("--session", type=str, default=RACE, help="'R' race, 'Q' qualifying, 'S' sprint")
+    parser.add_argument("--session", type=str, default=RACE, help="'R' race, 'S' sprint")
     parser.add_argument("--skip-extract", action="store_true", help="Bronze as it is, never the network (offline)")
     parser.add_argument("--no-telemetry", action="store_true", help="laps only: no telemetry in Bronze or Silver")
     args = parser.parse_args()

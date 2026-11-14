@@ -20,8 +20,8 @@ def test_settings_manager_loads_defaults(monkeypatch, tmp_path):
 
     manager = SettingsManager()
 
-    assert manager.cache_location == ".fastf1-cache"
     assert manager.computed_data_location == "computed_data"
+    assert "cache_location" not in SettingsManager.DEFAULTS      # FastF1's cache setting left with FastF1
 
 
 def test_settings_manager_reads_existing_json_file(monkeypatch, tmp_path):
@@ -45,8 +45,8 @@ def test_settings_manager_reads_existing_json_file(monkeypatch, tmp_path):
 
     manager = SettingsManager()
 
-    assert manager.cache_location == "custom-cache"
     assert manager.computed_data_location == "custom-data"
+    assert manager.get("cache_location") == "custom-cache"      # an old settings file still loads; the key is unused
 
 
 def test_settings_manager_set_and_get_values(monkeypatch, tmp_path):
@@ -77,10 +77,8 @@ def test_settings_manager_property_setters(monkeypatch, tmp_path):
     )
 
     manager = SettingsManager()
-    manager.cache_location = "cache-dir"
     manager.computed_data_location = "computed-dir"
 
-    assert manager.cache_location == "cache-dir"
     assert manager.computed_data_location == "computed-dir"
 
 
@@ -95,12 +93,12 @@ def test_settings_manager_save_writes_json_file(monkeypatch, tmp_path):
     )
 
     manager = SettingsManager()
-    manager.cache_location = "saved-cache"
+    manager.computed_data_location = "saved-data"
     manager.save()
 
     saved_data = json.loads(settings_file.read_text(encoding="utf-8"))
 
-    assert saved_data["cache_location"] == "saved-cache"
+    assert saved_data["computed_data_location"] == "saved-data"
 
 
 def test_settings_manager_reset_to_defaults(monkeypatch, tmp_path):
@@ -114,9 +112,8 @@ def test_settings_manager_reset_to_defaults(monkeypatch, tmp_path):
     )
 
     manager = SettingsManager()
-    manager.cache_location = "custom-cache"
+    manager.computed_data_location = "custom-data"
 
     manager.reset_to_defaults()
 
-    assert manager.cache_location == ".fastf1-cache"
     assert manager.computed_data_location == "computed_data"

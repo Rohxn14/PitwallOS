@@ -1,6 +1,6 @@
 """
 Settings dialog for F1 Race Replay application.
-Provides UI for configuring application settings like cache location.
+Provides UI for configuring application settings: where the replay keeps its computed frames.
 """
 
 from PySide6.QtCore import Qt
@@ -44,26 +44,6 @@ class SettingsDialog(QDialog):
         cache_layout = QFormLayout()
         cache_group.setLayout(cache_layout)
 
-        # FastF1 Cache Location
-        cache_path_layout = QHBoxLayout()
-        self.cache_path_edit = QLineEdit()
-        self.cache_path_edit.setPlaceholderText("Path to FastF1 cache folder...")
-        self.cache_browse_btn = QPushButton("Browse...")
-        self.cache_browse_btn.clicked.connect(self._browse_cache_location)
-        cache_path_layout.addWidget(self.cache_path_edit)
-        cache_path_layout.addWidget(self.cache_browse_btn)
-
-        cache_layout.addRow("FastF1 Cache Location:", cache_path_layout)
-
-        # Help text for cache
-        cache_help = QLabel(
-            "This is where FastF1 stores downloaded session data.\n"
-            "Changing this location will not move existing cached data."
-        )
-        cache_help.setStyleSheet("color: gray; font-size: 11px;")
-        cache_help.setWordWrap(True)
-        cache_layout.addRow("", cache_help)
-
         # Computed Data Location
         computed_path_layout = QHBoxLayout()
         self.computed_path_edit = QLineEdit()
@@ -105,20 +85,7 @@ class SettingsDialog(QDialog):
 
     def _load_current_settings(self):
         """Load current settings values into the UI."""
-        self.cache_path_edit.setText(self.settings.cache_location)
         self.computed_path_edit.setText(self.settings.computed_data_location)
-
-    def _browse_cache_location(self):
-        """Open a folder browser for cache location."""
-        current_path = self.cache_path_edit.text() or "."
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select FastF1 Cache Location",
-            current_path,
-            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
-        )
-        if folder:
-            self.cache_path_edit.setText(folder)
 
     def _browse_computed_location(self):
         """Open a folder browser for computed data location."""
@@ -148,16 +115,7 @@ class SettingsDialog(QDialog):
     def _save_settings(self):
         """Save the settings and close the dialog."""
         # Validate paths (basic validation - just check they're not empty)
-        cache_path = self.cache_path_edit.text().strip()
         computed_path = self.computed_path_edit.text().strip()
-
-        if not cache_path:
-            QMessageBox.warning(
-                self,
-                "Invalid Settings",
-                "FastF1 cache location cannot be empty.",
-            )
-            return
 
         if not computed_path:
             QMessageBox.warning(
@@ -168,7 +126,6 @@ class SettingsDialog(QDialog):
             return
 
         # Save settings
-        self.settings.cache_location = cache_path
         self.settings.computed_data_location = computed_path
         self.settings.save()
 
@@ -176,7 +133,6 @@ class SettingsDialog(QDialog):
             self,
             "Settings Saved",
             "Settings have been saved successfully.\n\n"
-            "Note: Cache location changes will take effect for new data downloads.",
         )
 
         self.accept()

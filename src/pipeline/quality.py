@@ -67,7 +67,7 @@ def race_quality(year: int, round_number: int, session: str = "R",
       rows        bronze_lap_rows -> laps (Silver) -> gold_rows; dropped_rows = Bronze - Silver
       flags       every data_quality count (driver-laps), clean_pct, weather_pct
       when        sc / vsc / red_flag_lap_numbers: race laps with that status, as ranges
-      source      bronze_telemetry, bronze_warnings, fastf1_warnings
+      source      bronze_telemetry, bronze_warnings
     """
     manifest = lake.read_manifest(year, round_number, session, root)
     laps = lake.read_table(lake.table_path(lake.SILVER, "laps", year, round_number, session, root))
@@ -94,7 +94,6 @@ def race_quality(year: int, round_number: int, session: str = "R",
         "red_flag_lap_numbers": lap_ranges(laps_with("is_red")),
         "bronze_telemetry": lake.bronze_has_telemetry(year, round_number, session, root),
         "bronze_warnings": len(manifest.get("warnings", [])),
-        "fastf1_warnings": len(manifest.get("fastf1_warnings", [])),
         # F1's own pit-stop record: published / not published / None (Bronze ingested before it was fetched)
         "f1_pit_stop_record": manifest.get("pit_stops"),
         "pit_stop_times": int(laps["pit_stop_time_sec"].notna().sum()) if "pit_stop_time_sec" in laps else None,

@@ -105,15 +105,8 @@ class QualifyingReplay(arcade.Window):
 
         # Build the track layout from an example lap
 
-        # (a session from the lake has its own: the fastest lap of the session that has telemetry)
-        example_telemetry = None
-        if hasattr(self.session, "example_lap"):
-            example_telemetry = self.session.example_lap()
-        else:
-            for res in self.data['results']:
-                if res['Q3'] is not None or res['Q2'] is not None or res['Q1'] is not None:
-                    example_telemetry = self.session.laps.pick_drivers(res['code']).pick_fastest().get_telemetry()
-                    break
+        # (the fastest lap of the session that has telemetry: src/lib/lake_qualifying.py)
+        example_telemetry = self.session.example_lap()
 
         self.world_scale = 1.0
         self.tx = 0
