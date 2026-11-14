@@ -20,6 +20,9 @@ cleaner reads is Silver's job, so a mistake there never costs a download.
     openf1_overtakes                   who passed whom, when
     openf1_car_data, openf1_location   telemetry, ~4 samples a second per driver (openf1.py downloads them)
 
+SPRINTS too (session "S"): a sprint is a short race, with the same tables; it is the 'Sprint' session of the race's
+meeting. Qualifying is not ingested yet.
+
 WHICH RACE: OpenF1 has no round numbers. A season's rounds are its 'Race' sessions that were not cancelled, in date
 order (season_calendar). Checked on 2023-2025: all 70 races get the round number the lake already used.
 
@@ -58,7 +61,7 @@ from src.pipeline.openf1 import (API_URL, CAR_TABLE, LOCATION_TABLE, PER_DRIVER,
                                  download_per_driver, http_fetch)
 
 RACE_SESSION = "R"
-SESSION_NAMES = {RACE_SESSION: "Race"}       # our session code -> OpenF1's session_name (races first)
+SESSION_NAMES = {RACE_SESSION: "Race", "S": "Sprint"}    # our session code -> OpenF1's session_name
 
 # Endpoints asked once per race, by session key (meetings: by meeting key).
 REQUIRED = ("sessions", "meetings", "drivers", "laps", "stints", "race_control", "weather", "position",
@@ -119,6 +122,24 @@ def race_of(calendar: pd.DataFrame, year: int, round_number: int) -> pd.Series:
     if len(match) != 1:
         raise OpenF1Error(f"{year} has no round {round_number}: OpenF1 lists rounds 1-{int(calendar['round'].max())}")
     return match.iloc[0]
+
+
+def session_of(fetch: Fetch, race: pd.Series, session: str) -> Dict[str, Any]:
+    """
+    OpenF1's keys and scheduled times for one session of a race weekend: {'session_key', 'start_utc', 'end_utc'}.
+    The race's own are in the calendar; a sprint is the 'Sprint' session of the same meeting (one more request).
+    Raises if the weekend has no such session.
+    """
+    if session == RACE_SESSION:
+        return {"session_key": int(race["session_key"]), "start_utc": race["start_utc"], "end_utc": race["end_utc"]}
+    name = SESSION_NAMES[session]
+    found = [s for s in fetch("sessions", {"meeting_key": int(race["meeting_key"]), "session_name": name})
+             if not s.get("is_cancelled")]
+    if len(found) != 1:
+        raise OpenF1Error(f"{int(race['season'])} round {int(race['round'])} ({race['event_name']}): {len(found)} "
+                          f"'{name}' sessions in OpenF1, need exactly one")
+    return {"session_key": int(found[0]["session_key"]), "start_utc": pd.Timestamp(found[0]["date_start"]),
+            "end_utc": pd.Timestamp(found[0]["date_end"])}
 
 
 def has_run(race: pd.Series, now: Optional[pd.Timestamp] = None) -> bool:
@@ -189,10 +210,12 @@ def ingest_session(year: int, round_number: int, session: str = RACE_SESSION,
     """
     start = time.time()
     if session not in SESSION_NAMES:
-        raise OpenF1Error(f"session '{session}': only races ({RACE_SESSION}) are ingested from OpenF1 so far")
+        raise OpenF1Error(f"session '{session}': only races and sprints ({', '.join(SESSION_NAMES)}) are ingested "
+                          "from OpenF1 so far")
     fetch = fetch or http_fetch()
     race = race_of(calendar if calendar is not None else season_calendar(fetch, year), year, round_number)
-    key, meeting = int(race["session_key"]), int(race["meeting_key"])
+    this = session_of(fetch, race, session)
+    key, meeting = this["session_key"], int(race["meeting_key"])
 
     held = held_endpoints(year, round_number, session, root, key)
     wanted = REQUIRED + OPTIONAL + (TELEMETRY if telemetry else ())
@@ -253,7 +276,7 @@ def ingest_session(year: int, round_number: int, session: str = RACE_SESSION,
     manifest = {
         **identity,
         "circuit": str(race["circuit"]),
-        "event_date": local_date(race["start_utc"], race["gmt_offset"]),
+        "event_date": local_date(this["start_utc"], race["gmt_offset"]),
         "source": lake.OPENF1,
         "driver_count": int(entries[lake.openf1_table("drivers")]["rows"]),
         "telemetry": all(name in entries for name in TELEMETRY_TABLES),
@@ -261,8 +284,8 @@ def ingest_session(year: int, round_number: int, session: str = RACE_SESSION,
         lake.OPENF1: {
             "session_key": key,
             "meeting_key": meeting,
-            "session_start_utc": race["start_utc"].isoformat(),
-            "session_end_utc": race["end_utc"].isoformat(),
+            "session_start_utc": this["start_utc"].isoformat(),
+            "session_end_utc": this["end_utc"].isoformat(),
             "gmt_offset": race["gmt_offset"],
             "empty": sorted(set(before.get("empty", [])) | set(empty)),
             "missing": {**before.get("missing", {}), **missing},

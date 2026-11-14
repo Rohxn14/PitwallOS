@@ -87,7 +87,7 @@ class RaceSelectionWindow(QMainWindow):
         self.year_combo = QComboBox()
         self.year_combo.addItem("All Years")
 
-        for year in range(2018, self.current_year + 1):
+        for year in range(2023, self.current_year + 1):       # OpenF1's calendar and data start in 2023
             self.year_combo.addItem(str(year))
 
         self.year_combo.setCurrentText(str(self.current_year))

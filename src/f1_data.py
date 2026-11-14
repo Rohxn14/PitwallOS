@@ -272,14 +272,14 @@ class TelemetryNotAvailable(RuntimeError):
 
 def load_session(year, round_number, session_type="R", lake_root=None):
     """
-    The session to replay. A race comes from the data lake (src/lib/lake_session.py): every race from 2023 on is
-    there, or is downloaded from OpenF1 and built now (about 3 minutes, once). Anything else (qualifying, sprints,
+    The session to replay. A race or a sprint comes from the data lake (src/lib/lake_session.py): every race from
+    2023 on is there, or is downloaded from OpenF1 and built now (about 3 minutes, once). Anything else (qualifying,
     seasons before 2023) still comes through FastF1, which since October 2026 only has what is in its local cache.
     """
     from src.lib import lake_session
     from src.pipeline import lake as _lake
     root = lake_root if lake_root is not None else _lake.DEFAULT_LAKE_ROOT
-    if session_type == "R" and int(year) >= 2023:
+    if session_type in lake_session.SESSION_TITLES and int(year) >= 2023:
         if not lake_session.available(year, round_number, session_type, root):
             try:
                 from src.pipeline.runner import run_pipeline
@@ -1565,105 +1565,35 @@ def get_quali_telemetry(session, session_type="Q"):
 
 
 def get_race_weekends_by_year(year):
-    """Returns a list of race weekends for a given year."""
-    enable_cache()
-    schedule = fastf1.get_event_schedule(year)
-    weekends = []
-    for _, event in schedule.iterrows():
-        if event.is_testing():
-            continue
+    """The race weekends of a season, from OpenF1's calendar (src/lib/race_calendar.py; 2023 on)."""
+    from src.lib import race_calendar
+    return race_calendar.weekends(year)
 
-        session_dates = {}
-        for i in range(1, 6):
-            session_name = event.get(f"Session{i}")
-            session_date = event.get(f"Session{i}Date")
-            if session_name and pd.notna(session_date):
-                session_dates[str(session_name)] = session_date.isoformat()
-
-        weekends.append(
-            {
-                "round_number": event["RoundNumber"],
-                "event_name": event["EventName"],
-                "date": str(event["EventDate"].date()),
-                "country": event["Country"],
-                "type": event["EventFormat"],
-                "session_dates": session_dates,
-            }
-        )
-    return weekends
 
 def get_race_weekends_by_place(place):
-    """Returns a list of past n race weekends for a given place."""
-    enable_cache()
-    place=place.lower().strip()
-    weekends=[]
-    current_year=date.today().year
+    """Every weekend with this event name, in every season the calendar covers."""
+    from src.lib import race_calendar
+    return race_calendar.weekends_by_place(place)
 
-    for year in range(2018,current_year): #Edit according to data availability (current data till last year)
-        try:
-            schedule=fastf1.get_event_schedule(year)
-        except Exception:
-            continue
 
-        for _, event in schedule.iterrows():
-            if event.is_testing():
-                continue
+def get_all_unique_race_names(start_year=None, end_year=None):
+    """Every event name in the calendar, sorted."""
+    from src.lib import race_calendar
+    return race_calendar.race_names()
 
-            event_name=str(event["EventName"]).strip().lower()
-            
-            if place==event_name:
-                weekends.append({
-                    "round_number": event["RoundNumber"],
-                    "event_name": event["EventName"],
-                    "date": str(event["EventDate"].date()),
-                    "country": event["Country"],
-                    "year": int(event["EventDate"].date().year),
-                    "type": event["EventFormat"],
-                })
-    return weekends
-
-def get_all_unique_race_names(start_year=2018, end_year=2025): #update as necessary
-    "Return a list of all unique race locations"
-    enable_cache()
-    race_names=set()
-    
-    for year in range(start_year, end_year+1):
-        try:
-            schedule=fastf1.get_event_schedule(year)
-        except Exception:
-            continue
-
-        for _,event in schedule.iterrows():
-            if event.is_testing():
-                continue
-
-            name=str(event["EventName"]).strip()
-            race_names.add(name)
-
-    return sorted(race_names)
 
 def list_rounds(year):
     """Lists all rounds for a given year."""
-    enable_cache()
     print(f"F1 Schedule {year}")
-    schedule = fastf1.get_event_schedule(year)
-    for _, event in schedule.iterrows():
-        print(f"{event['RoundNumber']}: {event['EventName']}")
+    for weekend in get_race_weekends_by_year(year):
+        print(f"{weekend['round_number']}: {weekend['event_name']}")
 
 
 def list_sprints(year):
     """Lists all sprint rounds for a given year."""
-    enable_cache()
     print(f"F1 Sprint Races {year}")
-    schedule = fastf1.get_event_schedule(year)
-    sprint_name = "sprint_qualifying"
-    if year == 2023:
-        sprint_name = "sprint_shootout"
-    if year in [2021, 2022]:
-        sprint_name = "sprint"
-    sprints = schedule[schedule["EventFormat"] == sprint_name]
-    if sprints.empty:
+    sprints = [w for w in get_race_weekends_by_year(year) if "sprint" in w["type"]]
+    if not sprints:
         print(f"No sprint races found for {year}.")
-    else:
-        for _, event in sprints.iterrows():
-            print(f"{event['RoundNumber']}: {event['EventName']}")
+    for weekend in sprints:
+        print(f"{weekend['round_number']}: {weekend['event_name']}")

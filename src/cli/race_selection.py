@@ -21,7 +21,7 @@ def cli_load():
     console = Console()
     console.print(Markdown("# F1 Race Replay 🏎️"))
 
-    years = [str(year) for year in range(current_year, 2009, -1)]
+    years = [str(year) for year in range(current_year, 2022, -1)]   # OpenF1 starts in 2023
     year = select("Choose a year", choices=years, qmark="🗓️ ", style=style).ask()
     if not year:
         sys.exit(0)

@@ -16,6 +16,7 @@ Where each thing comes from:
     timing_stream()                     OpenF1's position and intervals tables: the official order and gaps
     driver_colors()                     OpenF1's drivers table (team_colour)
     example_lap()                       Silver telemetry of the fastest clean lap: the track's outline, DRS zones
+    circuit_rotation()                  MultiViewer, kept in the lake (src/lib/race_calendar.py)
 
 ONE CLOCK: every time is seconds since lights out (openf1_translate), the clock of Silver. The replay subtracts
 the first telemetry sample's time anyway, so it never sees the difference from FastF1's clock.
@@ -35,13 +36,14 @@ from src.pipeline import lake, openf1_translate
 from src.pipeline.openf1_translate import seconds_since
 
 RACE = "R"
+SESSION_TITLES = {RACE: "Race", "S": "Sprint"}        # the sessions the lake can replay, and what to call them
 DEFAULT_ROTATION_DEG = 0.0
 
 
 def available(year: int, round_number: int, session_type: str = RACE,
               root: lake.PathLike = lake.DEFAULT_LAKE_ROOT) -> bool:
-    """True if the lake can replay this session: a race, Bronze from OpenF1, Silver laps and telemetry."""
-    if session_type != RACE or not lake.has_bronze(year, round_number, session_type, root):
+    """True if the lake can replay this session: a race or a sprint, Bronze from OpenF1, Silver laps and telemetry."""
+    if session_type not in SESSION_TITLES or not lake.has_bronze(year, round_number, session_type, root):
         return False
     if lake.read_manifest(year, round_number, session_type, root).get("source") != lake.OPENF1:
         return False
@@ -90,7 +92,8 @@ class LakeSession:
         self._silver_laps: Optional[pd.DataFrame] = None
 
     def __str__(self) -> str:      # the replay names its cache file after this: never the name FastF1's session has
-        return f"{self.year} Season Round {self.round_number} {self.event['EventName']} - Race - lake"
+        return (f"{self.year} Season Round {self.round_number} {self.event['EventName']} - "
+                f"{SESSION_TITLES[self.session_type]} - lake")
 
     def get_driver(self, number: Any) -> Dict[str, str]:
         return {"Abbreviation": self._codes[str(number)], "DriverNumber": str(number)}
@@ -232,12 +235,12 @@ class LakeSession:
         return None
 
     def circuit_rotation(self) -> float:
-        """Degrees to turn the map so that it looks like the broadcast's. From MultiViewer (through FastF1's client,
-        which it answers; the result is cached). Without it the map is simply not turned."""
+        """Degrees to turn the map so that it looks like the broadcast's. From MultiViewer, kept in the lake after the
+        first time (src/lib/race_calendar.py). Without it the map is simply not turned."""
         try:
-            from fastf1.mvapi import api as multiviewer
+            from src.lib import race_calendar
             key = int(self._tables["sessions"]["circuit_key"].iloc[0])
-            return float(multiviewer.get_circuit(year=self.year, circuit_key=key)["rotation"])
+            return race_calendar.rotation(self.year, key, self.root)
         except Exception as err:
             print(f"Circuit rotation not available ({type(err).__name__}: {err}); the map is not turned")
             return DEFAULT_ROTATION_DEG

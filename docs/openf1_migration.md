@@ -3,8 +3,9 @@
 A developer's guide to how PitwallOS changed its data source. It is written piece by piece as the work is done.
 
 **Status:** the lake in `data/` is built from OpenF1 alone (90 races, 2023 to 2026), new races are downloaded from OpenF1, and
-the replay reads the lake. FastF1 is still installed and used for three things: qualifying and sprint replays from its
-cache, the map's rotation, and the session picker's calendar. Removing it is the last piece.
+the replay reads the lake. Sprints replay from the lake too, and the session picker's calendar and the map's rotation no longer
+need FastF1. FastF1 is still installed for one thing: qualifying replays, from its cache. Qualifying from OpenF1 is the
+last step before it can be removed.
 
 ## Why
 
@@ -37,7 +38,8 @@ reads, so the cleaner, Gold, the analytics and the models keep their code and th
 | 3 | Rebuild 70 races, compare with the old lake | done |
 | 4 | New races from OpenF1; pace models re-scored; the 2026 races; swap the lakes | done |
 | 5 | The replay from the lake | done |
-| 6 | FastF1 removed (qualifying and sprints from OpenF1 first) | next |
+| 6 | The calendar and the circuits without FastF1; sprints from OpenF1 | done |
+| 7 | Qualifying from OpenF1, then FastF1 removed | next |
 
 ## Decisions so far
 
@@ -461,3 +463,59 @@ telemetry). Which sessions are replayable; `load_session` never asks FastF1 for 
 replay reads; a driver's arrays; the official order from the timing stream (Russell on pole, Verstappen leading after two
 minutes); the outline lap; the frames end to end; where a retired car's telemetry ends. `tests/test_load_session.py` (4): the
 order of sources, with an empty temporary lake and a faked download.
+
+## Piece 6: the calendar, the circuits and sprints without FastF1
+
+### The calendar
+
+The session picker asked FastF1 for the season's weekends. `src/lib/race_calendar.py` builds the same list from OpenF1's
+`sessions` and `meetings` (two requests a season): round, event name, the race's date at the circuit, country, whether it is
+a sprint weekend, and every session's scheduled start. The picker's functions in `f1_data.py`
+(`get_race_weekends_by_year`, `get_race_weekends_by_place`, `get_all_unique_race_names`, `list_rounds`, `list_sprints`) now
+call it. The picker offers 2023 onwards, where OpenF1's data starts; it used to offer 2018 onwards, seasons that could no
+longer be opened.
+
+### The circuits
+
+The map's rotation came from MultiViewer through FastF1's client. MultiViewer refuses a request that does not name its
+client (HTTP 403 to the default `python-requests`), and answers one that does. `race_calendar.circuit` asks it directly as
+`PitwallOS (+repository URL)` and keeps the whole answer: rotation, corners with their numbers, marshal sectors. The corners
+are the official reference the track model (Phase 5.1) will be checked against.
+
+### Reference data in the lake
+
+Both answers are small, change rarely and are needed offline, so they are kept as JSON under `<lake>/reference/`
+(`lake.reference_path`, `write_json`, `read_json`):
+
+| What | Fetched | Then |
+|---|---|---|
+| a finished season's calendar | once | read from the lake |
+| the running season's calendar | again when the copy is older than 12 hours (a race may be cancelled) | the copy if there is no network |
+| a circuit in a given year | once | read from the lake |
+
+Opening the picker costs 3 s the first time and 0.01 s afterwards, and it works offline.
+
+### Sprints
+
+A sprint is a short race with the same OpenF1 tables. `openf1_bronze.ingest_session(..., session="S")` finds it as the
+`Sprint` session of the race's meeting (`session_of`) and writes it to its own folder, `session=S`. The translation, Silver,
+Gold and `LakeSession` take it unchanged; `f1_data.load_session` sends "S" to the lake like "R". A sprint is downloaded the
+first time it is replayed (about 3 minutes). Checked on Qatar 2024's sprint: 380 laps, 20 classified, the replay's final order
+Piastri, Norris, Russell, as the result sheet has it.
+
+`lake.list_sessions` and `list_races` now list races unless asked otherwise: the six analyses listed every session, so a
+sprint in the lake would have been counted as a second race at that round.
+
+### Tests
+
+`tests/lib/test_race_calendar.py` (7): 2023's real calendar plus the real session times of two weekends; the picker's
+shape; a finished season fetched once; the running season fetched again after 12 hours and surviving without a network; the
+error when there is neither network nor copy; a circuit asked once, by name, and kept; a refusal keeps nothing.
+`tests/pipeline/test_openf1_bronze.py` (+2): a sprint lands in its own folder and the race listings do not see it; a weekend
+without a sprint says so.
+
+### Known limits
+
+- Qualifying and sprint qualifying are not in the lake: their replays still need FastF1's cache.
+- A sprint is not pre-downloaded; the first replay of each waits for the download.
+- Analyze has no sprint view: the analyses are about races.

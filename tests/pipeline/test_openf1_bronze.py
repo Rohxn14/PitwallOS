@@ -242,7 +242,9 @@ def test_telemetry_already_in_another_lake_is_copied_not_downloaded(tmp_path, go
 
 def test_it_refuses_a_bronze_that_came_from_fastf1(golden_lake):
     before = lake.read_manifest(2024, 23, root=golden_lake)
-    race = pd.DataFrame([{"season": 2024, "round": 23, "session_key": 9655, "meeting_key": 1251}])
+    race = pd.DataFrame([{"season": 2024, "round": 23, "session_key": 9655, "meeting_key": 1251,
+                          "start_utc": pd.Timestamp("2024-12-01T16:00:00+00:00"),
+                          "end_utc": pd.Timestamp("2024-12-01T18:00:00+00:00")}])
     with pytest.raises(openf1.OpenF1Error, match="did not come from OpenF1 alone"):
         openf1_bronze.ingest_session(2024, 23, root=golden_lake, fetch=FakeOpenF1(), calendar=race)
     assert lake.read_manifest(2024, 23, root=golden_lake) == before
@@ -259,6 +261,46 @@ def test_it_refuses_a_round_that_holds_another_session(tmp_path):
 def test_only_races_so_far(tmp_path):
     with pytest.raises(openf1.OpenF1Error, match="only races"):
         openf1_bronze.ingest_session(*MONZA, session="Q", root=tmp_path, fetch=FakeOpenF1())
+
+
+# --- sprints ---------------------------------------------------------------------------------------------------------
+
+class WithSprint(FakeOpenF1):
+    """Monza's meeting also has a 'Sprint' session, key 9999 (made up: Monza 2023 had none)."""
+
+    def __call__(self, endpoint, query):
+        if endpoint == "sessions" and "session_name" in query and "year" not in query:
+            self.calls.append((endpoint, dict(query)))
+            assert query == {"meeting_key": MEETING, "session_name": "Sprint"}
+            return [{"session_key": 9999, "meeting_key": MEETING, "date_start": "2023-09-02T14:30:00+00:00",
+                     "date_end": "2023-09-02T15:30:00+00:00", "is_cancelled": False}]
+        return super().__call__(endpoint, query)
+
+
+def test_a_sprint_is_the_sprint_session_of_the_races_meeting_in_its_own_folder(tmp_path):
+    fake = WithSprint()
+    out = openf1_bronze.ingest_session(*MONZA, session="S", root=tmp_path, fetch=fake, telemetry=False)
+    assert out["session_key"] == 9999
+    assert all(q.get("session_key") == 9999 for e, q in fake.calls if "session_key" in q)
+    manifest = lake.read_manifest(*MONZA, session="S", root=tmp_path)
+    assert manifest["session"] == "S" and manifest[lake.OPENF1]["session_start_utc"] == "2023-09-02T14:30:00+00:00"
+    assert manifest["event_date"] == "2023-09-02" and manifest["event_name"] == "Italian Grand Prix"
+    assert lake.has_bronze(*MONZA, session="S", root=tmp_path) and not lake.has_bronze(*MONZA, root=tmp_path)
+    # the race's listings do not see it: the analytics and the models are about races
+    assert lake.list_races(lake.BRONZE, "openf1_laps", tmp_path) == []
+    assert lake.list_races(lake.BRONZE, "openf1_laps", tmp_path, session="S") == [MONZA]
+    assert len(lake.list_sessions(lake.BRONZE, "openf1_laps", tmp_path, session=None)) == 1
+
+
+def test_a_weekend_without_a_sprint_says_so(tmp_path):
+    class NoSprint(FakeOpenF1):
+        def __call__(self, endpoint, query):
+            if endpoint == "sessions" and "session_name" in query and "year" not in query:
+                return []
+            return super().__call__(endpoint, query)
+
+    with pytest.raises(openf1.OpenF1Error, match="0 'Sprint' sessions"):
+        openf1_bronze.ingest_session(*MONZA, session="S", root=tmp_path, fetch=NoSprint())
 
 
 # --- many races --------------------------------------------------------------------------------------------------------

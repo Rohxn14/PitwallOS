@@ -17,6 +17,9 @@ Layout (one folder per session, same shape in every layer):
           lap_features.parquet
       reports/
           backfill_2024.csv       one row per race: status, error, every quality count
+      reference/
+          calendar_2024.json      the season's race weekends (src/lib/race_calendar.py)
+          circuit_150_2024.json   a circuit as MultiViewer describes it: rotation, corners
 
 A Bronze built from OpenF1 alone (src/pipeline/openf1_bronze.py; manifest "source": "openf1") holds OpenF1's
 tables as delivered instead, one per endpoint, named openf1_<endpoint>: openf1_laps, openf1_stints, openf1_pit,
@@ -56,6 +59,7 @@ FASTF1, OPENF1 = "fastf1", "openf1"   # where a race's telemetry came from (and,
 SILVER_RESULTS_TABLE = "results"       # the classification, written to Silver when Bronze is OpenF1's (FastF1's is in Bronze)
 BRONZE_PIT_STOPS_TABLE = "pit_stops"   # F1's own pit-stop record, only where F1 published one
 REPORTS_DIR = "reports"
+REFERENCE_DIR = "reference"      # small facts fetched once and kept: the calendar, the circuits (JSON)
 # UTF-8 with a byte-order mark: Excel on Windows reads a CSV without one as ANSI
 # ("São Paulo" shows as "SÃ£o Paulo"). pandas reads it back with clean column names.
 REPORT_ENCODING = "utf-8-sig"
@@ -188,6 +192,25 @@ def bronze_has_pit_stops(year: int, round_number: int, session: str = "R",
     return table_path(BRONZE, BRONZE_PIT_STOPS_TABLE, year, round_number, session, root).exists()
 
 
+def reference_path(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
+    """A piece of reference data kept in the lake (JSON), e.g. reference_path('calendar_2024')."""
+    return Path(root) / REFERENCE_DIR / f"{name}.json"
+
+
+def write_json(content: object, path: PathLike) -> Path:
+    """Write JSON atomically (temporary file + rename), like every table."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(content, indent=1, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def read_json(path: PathLike) -> object:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def report_path(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> Path:
     """A report about the lake (CSV, for people), e.g. report_path('backfill_2024')."""
     return Path(root) / REPORTS_DIR / f"{name}.csv"
@@ -208,19 +231,21 @@ def read_report(name: str, root: PathLike = DEFAULT_LAKE_ROOT) -> pd.DataFrame:
     return pd.read_csv(report_path(name, root), encoding=REPORT_ENCODING)
 
 
-def list_sessions(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT) -> List[Path]:
-    """Every file of `table` across all sessions in a layer, sorted."""
-    return sorted((Path(root) / layer).glob(f"season=*/round=*/session=*/{table}.parquet"))
+def list_sessions(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT,
+                  session: Optional[str] = "R") -> List[Path]:
+    """Every file of `table` across the races in a layer, sorted. `session`: which kind ("R" races, the default: the
+    analytics and the models are about races; "S" sprints), or None for every session."""
+    kind = "*" if session is None else session
+    return sorted((Path(root) / layer).glob(f"season=*/round=*/session={kind}/{table}.parquet"))
 
 
 def list_races(layer: str, table: str, root: PathLike = DEFAULT_LAKE_ROOT,
                session: str = "R") -> List[Tuple[int, int]]:
     """(season, round) of every `session` holding `table` in a layer, in calendar order (round 2 before 10)."""
     races = []
-    for path in list_sessions(layer, table, root):
-        season_part, round_part, session_part = path.parts[-4], path.parts[-3], path.parts[-2]
-        if session_part == f"session={session}":
-            races.append((int(season_part.split("=")[1]), int(round_part.split("=")[1])))
+    for path in list_sessions(layer, table, root, session):
+        season_part, round_part = path.parts[-4], path.parts[-3]
+        races.append((int(season_part.split("=")[1]), int(round_part.split("=")[1])))
     return sorted(races)
 
 
