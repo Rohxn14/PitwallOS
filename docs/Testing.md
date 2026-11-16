@@ -16,6 +16,7 @@ and 3.12 on every push to `main` and on every pull request.
 | `tests/analytics/` | Each Phase 2 step: simulated races with known physics recovered exactly, and hand-checked facts of real races |
 | `tests/models/` | The harness and each pace model: made-up races with the formula's physics (`simulated_race.py`), no leak, golden laps |
 | `tests/gui/` | Charts off-screen, and the windows with Qt's `offscreen` platform |
+| `tests/telemetry/` | The track model: made-up circuits with known corners, the shared distance, the scoring, Qatar 2024 against Lusail's official corners |
 | `tests/lib/`, `tests/insights/` | The replay's running order, the lake read as a replay session (race and qualifying), the calendar, rewind behaviour of the live windows |
 
 ## The rules

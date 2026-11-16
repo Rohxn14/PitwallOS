@@ -121,7 +121,7 @@ tab per analysis, with hover tooltips on every chart.
 | 1. Backfill | 2023-2025, a quality report per race | Done |
 | 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | Done |
 | 3. Pace model | Persistence → linear decomposition → state-space → gradient boosting, on races each has never seen | Done |
-| 4. Telemetry | In the lake, with a quality report. Next: the track model, corner-by-corner comparison, minimum-speed fade as an early sign of tyre wear | In progress |
+| 4. Telemetry | In the lake, with a quality report; a track model of every race (reference line, shared lap distance, corners: 88 % of official corners found, 99.5 % of those taken under 150 km/h). Next: per-corner features, driver comparison, tyre fade in corner speeds | In progress |
 | 5. Presentation | A web front end and a written case study of one race | Planned |
 
 ## Getting started

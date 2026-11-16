@@ -155,6 +155,33 @@ GOLD_LAP_FEATURES = pa.DataFrameSchema(
 )
 
 
+GOLD_TRACK_LINE = pa.DataFrameSchema(
+    {
+        "distance_m": pa.Column(float, pa.Check.ge(0)),
+        "x": pa.Column(float),
+        "y": pa.Column(float),
+        "speed_kmh": pa.Column(float, pa.Check.in_range(0, 400)),
+        "curvature": pa.Column(float, pa.Check.in_range(-0.2, 0.2)),     # a radius under 5 m is not a racetrack
+        "laps": pa.Column(int, pa.Check.ge(1)),
+    },
+    checks=[pa.Check(lambda df: bool(df["distance_m"].is_monotonic_increasing), error="distance must grow along the line"),
+            pa.Check(lambda df: len(df) >= 50, error="a line needs at least 50 points")],
+    strict=True,
+)
+
+GOLD_TRACK_CORNERS = pa.DataFrameSchema(
+    {
+        "distance_m": pa.Column(float, pa.Check.ge(0)),
+        "x": pa.Column(float),
+        "y": pa.Column(float),
+        "speed_kmh": pa.Column(float, pa.Check.in_range(0, 400)),
+        "method": pa.Column(str, pa.Check.isin(["speed", "map", "both", "official"])),
+        "number": pa.Column(float, pa.Check.ge(1), nullable=True, required=False),     # official corners only
+    },
+    strict=False,
+)
+
+
 def validate(df: pd.DataFrame, schema: pa.DataFrameSchema, table_name: str) -> pd.DataFrame:
     """
     Check a table against its contract. Returns the table unchanged if it passes.
