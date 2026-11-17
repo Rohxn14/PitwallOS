@@ -134,6 +134,37 @@ def project(line: pd.DataFrame, x: Sequence[float], y: Sequence[float]) -> np.nd
     return line["distance_m"].to_numpy(dtype=float)[nearest]
 
 
+PROJECT_CANDIDATES = 24        # project_lap looks at this many nearest points of the line ...
+PROJECT_REACH_M = 30.0         # ... no further than this beyond the nearest one ...
+PROJECT_STRETCH_M = 60.0       # ... and takes the nearest on the same stretch as the one the car's own distance points at
+
+
+def project_lap(line: pd.DataFrame, x: Sequence[float], y: Sequence[float], share: Sequence[float]) -> np.ndarray:
+    """As project, for the samples of one lap, where `share` says roughly how much of the lap each sample has done
+    (0 to 1, from the car's own distance). Where the circuit passes close to itself (a crossover, the two sides of a
+    hairpin, the pit straight next to the back straight) the nearest point of the line can be on the wrong stretch:
+    so, in two steps: of the points of the line near the sample, the one whose distance is closest to share * length
+    says WHICH STRETCH the car is on; the answer is the nearest point of that stretch (within PROJECT_STRETCH_M of it
+    along the line). The car's own distance only chooses the stretch: it is 1 % short and drifts, so it must not
+    choose the point."""
+    from scipy.spatial import cKDTree
+    distance = line["distance_m"].to_numpy(dtype=float)
+    length = lap_length(line)
+    tree = cKDTree(np.column_stack([line["x"].to_numpy(dtype=float), line["y"].to_numpy(dtype=float)]))
+    k = min(PROJECT_CANDIDATES, len(line))
+    away, index = tree.query(np.column_stack([np.asarray(x, dtype=float), np.asarray(y, dtype=float)]), k=k)
+    candidate = distance[index]                                              # nearest first, per sample
+    expected = np.asarray(share, dtype=float)[:, None] * length
+    gap = np.abs(candidate - expected)
+    gap = np.minimum(gap, length - gap)                                      # the short way round the loop
+    near = away <= away[:, :1] + PROJECT_REACH_M * 10
+    rows = np.arange(len(candidate))
+    pointed_at = candidate[rows, np.where(near, gap, np.inf).argmin(axis=1)][:, None]
+    along = np.abs(candidate - pointed_at)
+    same_stretch = near & (np.minimum(along, length - along) <= PROJECT_STRETCH_M)
+    return candidate[rows, same_stretch.argmax(axis=1)]                      # nearest first: the first on the stretch
+
+
 def lap_length(line: pd.DataFrame) -> float:
     """The length of the line, back to where it starts (metres)."""
     back = np.hypot(line["x"].iloc[0] - line["x"].iloc[-1], line["y"].iloc[0] - line["y"].iloc[-1]) / 10.0
@@ -251,18 +282,20 @@ def loop_gap(a: float, b: float, length: float) -> float:
 # --- the answer key ---------------------------------------------------------------------------------------------------
 
 def official_corners(circuit: Dict[str, Any], line: pd.DataFrame) -> pd.DataFrame:
-    """MultiViewer's corners placed on the line: number, distance_m (of the nearest point of the line), off_line_m
-    (how far the official position is from it), x, y."""
+    """MultiViewer's corners placed on the line: number, label (the number and MultiViewer's letter, if any: the
+    Hungaroring has a turn 1 and a turn 1A), distance_m (of the nearest point of the line), off_line_m (how far the
+    official position is from it), x, y."""
     lx, ly = line["x"].to_numpy(dtype=float), line["y"].to_numpy(dtype=float)
     rows = []
     for corner in circuit.get("corners", []):
         x, y = float(corner["trackPosition"]["x"]), float(corner["trackPosition"]["y"])
         away = np.hypot(lx - x, ly - y)
         nearest = int(np.argmin(away))
-        rows.append({"number": int(corner["number"]), "distance_m": float(line["distance_m"].iloc[nearest]),
+        rows.append({"number": int(corner["number"]), "label": f"{int(corner['number'])}{corner.get('letter') or ''}",
+                     "distance_m": float(line["distance_m"].iloc[nearest]),
                      "off_line_m": float(away[nearest]) / 10.0, "x": x, "y": y,
                      "speed_kmh": float(line["speed_kmh"].iloc[nearest])})
-    return pd.DataFrame(rows, columns=["number", "distance_m", "off_line_m", "x", "y", "speed_kmh"])
+    return pd.DataFrame(rows, columns=["number", "label", "distance_m", "off_line_m", "x", "y", "speed_kmh"])
 
 
 def score(found: pd.DataFrame, official: pd.DataFrame, length: float,
@@ -279,7 +312,10 @@ def score(found: pd.DataFrame, official: pd.DataFrame, length: float,
         used_found.add(i)
         used_official.add(j)
         errors.append(gap)
-    missed = sorted(int(official["number"].iloc[j]) for j in range(len(official)) if j not in used_official)
+    labels = official["label"] if "label" in official else official["number"].astype(int).astype(str)
+    missed = sorted(((int(official["number"].iloc[j]), str(labels.iloc[j])) for j in range(len(official))
+                     if j not in used_official))
+    missed = [label for _, label in missed]
     return {"official": int(len(official)), "found": int(len(found)), "matched": len(errors),
             "missed": len(missed), "extra": int(len(found) - len(errors)),
             "exact_count": bool(len(found) == len(official)),
@@ -316,8 +352,13 @@ def build_track(year: int, round_number: int, session: str = "R", root: lake.Pat
         row["official_off_line_m"] = round(float(key["off_line_m"].median()), 1) if len(key) else np.nan
         for method, table in found.items():
             row.update({f"{method}_{name}": value for name, value in score(table, key, length).items()})
-    contracts.validate(line, contracts.GOLD_TRACK_LINE, "Gold track line")
-    contracts.validate(corners, contracts.GOLD_TRACK_CORNERS, "Gold track corners")
+    try:
+        contracts.validate(line, contracts.GOLD_TRACK_LINE, "Gold track line")
+        contracts.validate(corners, contracts.GOLD_TRACK_CORNERS, "Gold track corners")
+    except contracts.ContractError:
+        for table in (LINE_TABLE, CORNERS_TABLE):          # an older map of this race must not outlive the refusal
+            lake.remove_table(lake.table_path(lake.GOLD, table, year, round_number, session, root))
+        raise
     lake.write_table(line, lake.table_path(lake.GOLD, LINE_TABLE, year, round_number, session, root), metadata=identity)
     lake.write_table(corners, lake.table_path(lake.GOLD, CORNERS_TABLE, year, round_number, session, root),
                      metadata=identity)

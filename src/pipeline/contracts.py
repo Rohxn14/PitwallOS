@@ -177,8 +177,74 @@ GOLD_TRACK_CORNERS = pa.DataFrameSchema(
         "speed_kmh": pa.Column(float, pa.Check.in_range(0, 400)),
         "method": pa.Column(str, pa.Check.isin(["speed", "map", "both", "official"])),
         "number": pa.Column(float, pa.Check.ge(1), nullable=True, required=False),     # official corners only
+        "label": pa.Column(object, nullable=True, required=False),                    # "1", "1A": official only
     },
     strict=False,
+)
+
+
+def _null_unless_complete(columns):
+    """Rule 2 for the telemetry features: a row that is not complete carries no feature."""
+    return pa.Check(lambda df: bool(df.loc[~df["is_complete"], columns].isna().all().all()),
+                    error="a row that is not complete must have null features")
+
+
+GOLD_CORNER_FEATURES = pa.DataFrameSchema(
+    {
+        "season": pa.Column(int),
+        "round": pa.Column(int),
+        "driver_number": pa.Column(str),
+        "driver_code": pa.Column(str),
+        "lap_number": pa.Column(int, pa.Check.ge(1)),
+        "corner_order": pa.Column(int, pa.Check.ge(1)),
+        "corner": pa.Column(str),
+        "corner_source": pa.Column(str, pa.Check.isin(["official", "map"])),
+        "corner_distance_m": pa.Column(float, pa.Check.ge(0)),
+        "is_complete": pa.Column(bool),
+        "segment_time_sec": pa.Column(float, pa.Check.gt(0), nullable=True),
+        "corner_speed_kmh": pa.Column(float, pa.Check.in_range(0, 400), nullable=True),
+        "min_speed_kmh": pa.Column(float, pa.Check.in_range(0, 400), nullable=True),
+        "min_speed_distance_m": pa.Column(float, nullable=True),
+        "entry_speed_kmh": pa.Column(float, pa.Check.in_range(0, 400), nullable=True),
+        "brake_point_m": pa.Column(float, pa.Check.ge(0), nullable=True),          # null: taken without the brakes
+        "exit_speed_kmh": pa.Column(float, pa.Check.in_range(0, 400), nullable=True),
+        "throttle_on_m": pa.Column(float, pa.Check.ge(0), nullable=True),
+        "full_throttle_share": pa.Column(float, pa.Check.in_range(0, 1), nullable=True),
+    },
+    checks=[
+        _null_unless_complete(["segment_time_sec", "corner_speed_kmh", "min_speed_kmh", "entry_speed_kmh", "exit_speed_kmh", "brake_point_m", "throttle_on_m"]),
+        pa.Check(lambda df: bool(df.loc[df["is_complete"], ["min_speed_kmh", "entry_speed_kmh", "exit_speed_kmh",
+                                                             "segment_time_sec"]].notna().all().all()),
+                 error="a complete row must have its speeds and its time"),
+        pa.Check(lambda df: bool((df.loc[df["is_complete"], "min_speed_kmh"]
+                                  <= df.loc[df["is_complete"], ["entry_speed_kmh", "exit_speed_kmh"]].min(axis=1) + 1e-6).all()),
+                 error="the minimum speed is above the entry or exit speed"),
+    ],
+    unique=["driver_number", "lap_number", "corner_order"],
+    strict=True,
+)
+
+GOLD_LAP_TELEMETRY = pa.DataFrameSchema(
+    {
+        "season": pa.Column(int),
+        "round": pa.Column(int),
+        "driver_number": pa.Column(str),
+        "driver_code": pa.Column(str),
+        "lap_number": pa.Column(int, pa.Check.ge(1)),
+        "is_complete": pa.Column(bool),
+        "top_speed_kmh": pa.Column(float, pa.Check.in_range(0, 400), nullable=True),
+        "full_throttle_share": pa.Column(float, pa.Check.in_range(0, 1), nullable=True),
+        "brake_share": pa.Column(float, pa.Check.in_range(0, 1), nullable=True),
+        "coast_share": pa.Column(float, pa.Check.in_range(0, 1), nullable=True),
+        "segments_time_sum_sec": pa.Column(float, pa.Check.gt(0), nullable=True),
+        "telemetry_ticks": pa.Column(int, pa.Check.ge(1)),
+        "lap_time_sec": pa.Column(float, nullable=True),
+        "is_clean_lap": pa.Column(bool),
+    },
+    checks=[_null_unless_complete(["top_speed_kmh", "full_throttle_share", "brake_share", "coast_share",
+                                   "segments_time_sum_sec"])],
+    unique=["driver_number", "lap_number"],
+    strict=True,
 )
 
 

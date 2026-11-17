@@ -95,6 +95,16 @@ def gold_features_path(year: int, round_number: int, session: str = "R",
     return table_path(GOLD, GOLD_TABLE, year, round_number, session, root)
 
 
+def remove_table(path: PathLike) -> bool:
+    """Remove one derived table, if it is there (True if it was). For a table that a newer build refused to write:
+    an older version must not outlive the refusal and be read as if it were current."""
+    path = Path(path)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
 def write_table(df: pd.DataFrame, path: PathLike, metadata: Optional[Dict[str, object]] = None) -> Path:
     """
     Write a DataFrame to Parquet atomically.
