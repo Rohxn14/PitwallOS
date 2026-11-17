@@ -97,12 +97,14 @@ def test_every_feature_of_a_lap_driven_by_hand(made_up):
 def test_segment_times_are_the_time_between_the_cuts_and_add_up_to_the_lap(made_up):
     line, corners, lap, fine, apexes = made_up
     length = tm.lap_length(line)
-    rows, lap_row = cf.lap_features(lap, line, corners, length)
+    rows, lap_row = cf.lap_features(lap, line, corners, length, 1000.0, 1000.0 + fine[-1, 0])   # official ends
     times = np.array([r["segment_time_sec"] for r in rows])
     cuts = cf.segment_edges(apexes, fine[-1, 1])
     truth = np.diff(np.interp(cuts, fine[:, 1], fine[:, 0]))                            # from the 1 ms simulation
-    assert times == pytest.approx(truth, abs=0.1)
-    assert times.sum() == pytest.approx(fine[-1, 0], abs=0.1)                           # the lap, to a tick
+    assert times == pytest.approx(truth, abs=0.03)
+    assert times.sum() == pytest.approx(fine[-1, 0], abs=1e-9)                          # exactly the lap
+    no_ends, _ = cf.lap_features(lap, line, corners, length)                            # unknown: first and last
+    assert sum(r["segment_time_sec"] for r in no_ends) == pytest.approx(fine[-1, 0], abs=0.1)   # sample, to a tick
     assert lap_row["segments_time_sum_sec"] == pytest.approx(times.sum())
     assert lap_row["top_speed_kmh"] == pytest.approx(288) and lap_row["is_complete"]
     assert lap_row["brake_share"] == pytest.approx(lap["brake"].mean())
@@ -144,7 +146,9 @@ def test_a_lap_that_stops_after_the_first_corner_has_only_that_corner(made_up):
     assert cf.lap_on_line(line, stopped, tm.lap_length(line)).max() == pytest.approx(apexes[0] + 100, abs=10)
 
 
-def test_the_distance_never_goes_backwards_and_crosses_the_line_at_both_ends(made_up):
+def test_the_distance_never_goes_backwards_and_crosses_the_line_at_both_ends(made_up, monkeypatch):
+    """The map alone (no fusion: a single sample that jumps is exactly what fusion smooths away)."""
+    monkeypatch.setattr(cf, "FUSE_TICKS", 1)
     line, corners, lap, fine, apexes = made_up
     length = tm.lap_length(line)
     path = draw(RECTANGLE)
@@ -158,6 +162,47 @@ def test_the_distance_never_goes_backwards_and_crosses_the_line_at_both_ends(mad
     d = cf.lap_on_line(line, pd.concat([first, middle, last]), length)
     assert d[0] == pytest.approx(-4, abs=4) and d[-1] == pytest.approx(length + 3, abs=4)
     assert (np.diff(d) >= 0).all()
+
+
+def test_stale_positions_are_smoothed_by_the_cars_own_distance(made_up, monkeypatch):
+    """OpenF1 sends about 3.7 positions a second: at 10 Hz a position is often repeated. Here every position is held
+    for 3 samples. Fused with the car's own distance (1 % short), the cuts land closer to the truth than the map alone
+    places them; and a lap with official crossings adds up to exactly the time between them."""
+    line, corners, lap, fine, apexes = made_up
+    length = tm.lap_length(line)
+    stale = lap.copy()
+    held = np.minimum(((np.arange(len(stale)) + 1) // 3) * 3, len(stale) - 1)   # the same reading 3 samples running
+    stale[["x", "y"]] = stale[["x", "y"]].to_numpy()[held]
+    cuts = cf.segment_edges(apexes, fine[-1, 1])
+    truth = np.diff(np.interp(cuts, fine[:, 1], fine[:, 0]))
+
+    def worst(fuse):
+        monkeypatch.setattr(cf, "FUSE_TICKS", fuse)
+        rows, _ = cf.lap_features(stale, line, corners, length, 1000.0, 1000.0 + fine[-1, 0])
+        return np.abs(np.array([r["segment_time_sec"] for r in rows]) - truth).max()
+
+    alone, fused = worst(1), worst(31)
+    print(f"worst cut: map alone {alone:.3f} s, fused {fused:.3f} s")
+    assert fused < alone / 2
+    rows, lap_row = cf.lap_features(stale, line, corners, length, 1000.0, 1000.0 + fine[-1, 0])
+    assert lap_row["segments_time_sum_sec"] == pytest.approx(fine[-1, 0], abs=1e-9)
+
+
+def test_official_lap_ends_are_used_only_where_they_agree_with_the_telemetry():
+    t = np.arange(0.0, 90.0, 0.1) + 1000.0
+    assert cf.lap_ends(t, 999.97, 1090.04) == (999.97, 1090.04)
+    assert cf.lap_ends(t) == (1000.0, pytest.approx(1090.0))                       # unknown: the samples
+    assert cf.lap_ends(t, 999.97, 1092.0) == (999.97, pytest.approx(1090.0))       # 2 s off: not this lap's end
+
+
+def test_the_sector_check_turns_distance_into_time():
+    """Sector line at 1,000 m on most laps; a lap 8 m off at 80 m/s is 100 ms off."""
+    points = [(1000.0, 80.0, 2000.0, 50.0)] * 30 + [(1008.0, 80.0, 2000.0, 50.0)]
+    median, p95 = cf.sector_check(points)
+    assert median == 0.0 and p95 == pytest.approx(0.0)
+    points = [(1000.0 + k, 80.0, 2000.0 + k, 80.0) for k in range(-10, 11)]       # off by 0 to 10 m, both sectors
+    assert cf.sector_check(points)[0] == pytest.approx(5 / 80 * 1000)                # the median: 5 m = 62.5 ms
+    assert np.isnan(cf.sector_check([(1000.0, 80.0, 2000.0, 50.0)] * 5)[0])          # too few laps
 
 
 def test_the_lap_is_cut_halfway_between_corners_and_at_the_line():
@@ -210,6 +255,17 @@ def test_where_two_stretches_run_side_by_side_a_sample_lands_on_the_one_the_car_
     lap.loc[len(lap)] = [50.0, 100.0, length * 0.99]                                    # ... and the lap's last sample
     d = cf.lap_on_line(line, lap, length)
     assert d[:-1] == pytest.approx(way, abs=5) and (np.diff(d) >= 0).all()
+
+
+def test_a_sample_between_two_points_of_the_line_gets_the_distance_between_them():
+    """The line has a point every 5 m; a sample is placed on the stretch between two points, not snapped to one
+    (snapping put up to 2.5 m, 0.03 s at 300 km/h, into every distance)."""
+    x = np.arange(0.0, 1000.0, 5.0)
+    line = pd.DataFrame({"distance_m": x, "x": x * 10, "y": 0.0})
+    line = pd.concat([line, pd.DataFrame({"distance_m": [1000.0 + k * 5 for k in range(200)],
+                                          "x": (1000.0 - np.arange(200) * 5.0) * 10, "y": 500.0})], ignore_index=True)
+    on = tm.project_lap(line, [122.5 * 10, 377.0 * 10], [1.0 * 10, -2.0 * 10], [122.5 / 2000, 377.0 / 2000])
+    assert on == pytest.approx([122.5, 377.0], abs=0.01)
 
 
 # --- the golden race: Qatar 2024 ------------------------------------------------------------------------------------------

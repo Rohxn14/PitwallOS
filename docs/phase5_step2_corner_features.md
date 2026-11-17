@@ -57,9 +57,15 @@ another. So `project_lap` does it in two steps:
 1. of the line's points near the sample (the 24 nearest, no more than 30 m further than the nearest), the one whose
    distance is closest to where the car's OWN distance says it is (its share of the lap times the line's length)
    tells which stretch of the track the car is on;
-2. the answer is the nearest point of the line on that stretch (within 60 m along the line of the one in step 1).
+2. the answer is the nearest point of the line on that stretch (within 60 m along the line of the one in step 1),
+   placed on the stretch BETWEEN that point and its neighbour, not snapped to it (the line has a point every 5 m).
 
 The car's own distance only chooses the stretch. It is 1 % short and drifts, so it must not choose the point.
+
+Then the two measures of distance are combined (a **complementary filter**). The map is right on average but jumpy:
+OpenF1 sends about 3.7 positions a second, so at 10 Hz a position repeats and can be a quarter of a second old. The car's
+own distance (its speed added up) is smooth from one sample to the next but drifts over a lap. The distance used is the
+car's own distance plus the map's correction to it, averaged over 3 s (`FUSE_TICKS = 31`).
 
 Then, across the start/finish line: a sample just before the line at the start of a lap gets a small negative distance
 (not 5,380 m), and a sample just past it at the end gets a little more than the length. Last, the distance is made to
@@ -78,9 +84,15 @@ segment.
          segment 1      segment 2    segment 3       segment 4
 
 The time of a segment is the time between its two cuts, each cut's time interpolated between the two samples either
-side of it. The first cut is the lap's first sample and the last is its last sample plus one tick, so **the segment
-times of a lap add up exactly to the time its telemetry covers**. That is the check on the whole step: it must equal the
-official lap time, which the code never reads.
+side of it. The first and the last cut are the official crossings of the timing line (Silver's `lap_start_sec`,
+`lap_end_sec`, to the millisecond, on the telemetry's clock), so **a lap's segment times add up exactly to its official
+lap time** (`lap_ends`). Where the official time is unknown, or more than 0.5 s from the telemetry's own lap (Miami 2025's
+lap 1: 2,300 s of telemetry for a 92 s lap), the lap's first sample and its last plus a tick are used.
+
+**The check** is therefore on the cuts INSIDE the lap, against the **official sector times**, which nothing else here reads
+(`sector_check`). On every clean lap, where was the car on our map when the official sector 1 (and 2) ended? The sector
+line is where it lands on most laps (the median); a lap's error is how far from it the car was, turned into time by its
+speed there.
 
 ### 4. The features of one segment (`segment_features`)
 
@@ -117,7 +129,10 @@ brake: "lift and coast"), and the sum of the segment times. Each share is of the
 | Decision | Alternatives | Why |
 |---|---|---|
 | Official corners, letters kept | the map's bends; numbers only | "turn 4" must mean turn 4 to a reader. Numbers only made two rows "turn 1" at the Hungaroring: the contract refused all four Hungarian races until the letter was kept |
-| Cut halfway between corners | a fixed window round each corner (say 150 m each side); braking zone to exit | halfway cuts cover the lap exactly once, so segment times add up to the lap and can be checked against the official lap time. Fixed windows overlap at chicanes (35 % of official corners are within 150 m of the next) and leave straights out |
+| Cut halfway between corners | a fixed window round each corner (say 150 m each side); braking zone to exit | halfway cuts cover the lap exactly once, so segment times add up to the lap (with the official crossings as its ends, exactly). Fixed windows overlap at chicanes (35 % of official corners are within 150 m of the next) and leave straights out |
+| Lap ends at the official line crossings | the lap's first sample and its last plus a tick (the first version); the moment worked out from distance and speed | the samples round each end to a tick: up to 0.05 s in the first and the last corner. Working the crossing out from position was worse (0.043-0.053 s spread against the official crossings, 0.029 s for the rounding): positions are stale |
+| Distance fused with the car's own (3 s) | the map alone; the car's own distance alone | the map's positions repeat (3.7 Hz); the car's own distance drifts 1 %. Fused: cuts 14-20 ms from official sector times instead of 22-34 ms on 8 races; 1 s and 6 s also tried, 3 s kept as proposed before the run |
+| Checked against official sector times | segment sums against official lap times | with official ends the sums equal the lap time by construction; the sectors test the cuts inside the lap, which a corner comparison depends on |
 | Guided projection (`project_lap`) | the nearest point (5.1's `project`); the car's own distance | the nearest point jumps to the other side of a hairpin (a test builds one: 1,500 m wrong); the car's own distance is 1 % short and drifts. Measured: the end of official sector 1 lands at the same metre of the line on every clean lap with sd 3-5 m in 8 races, where the car's own distance spreads 3-6 m and up to 199 m (Zandvoort 2025, one bad lap). A sample at 300 km/h covers 8 m |
 | Distances never go backwards | raw projections | segment cuts need distance to grow with time; a car's position jitters by a metre or two |
 | Brake point from the last braking run before the slowest point | the first brake sample in the segment | a short dab on the brakes earlier in a long segment would move the "brake point" hundreds of metres |
@@ -132,15 +147,27 @@ brake: "lift and coast"), and the sum of the segment times. Each share is of the
 corner rows, 53 MB of Gold. 87 races on official corners, 2 on the map's bends (Madrid 2026 and Bahrain's second 2026
 date, which MultiViewer has no list for). About 5 s a race.
 
-**The check: segment times against official lap times** (the code never reads them), clean complete laps:
+**The check: where the cuts land in time, against the official sector times** (clean complete laps, sectors 1 and 2):
 
-| | Median of races | Worst race |
-|---|---|---|
-| median difference | 0.029 s | 0.033 s |
-| 95th percentile | 0.077 s | 0.083 s |
+| | Median of races | Middle half of races | Worst race |
+|---|---|---|---|
+| a typical lap's error | 20 ms | 17 to 24 ms | 70 ms (Austria 2026) |
+| the worst 5 % of laps | 70 ms | 56 to 93 ms | 257 ms (Austria 2026) |
 
-This is the 10 Hz grid, not the method: a lap starts somewhere inside a 0.1 s tick, and the telemetry can only say which
-tick. Two such roundings (start and end) give about 0.03 s.
+Austria 2026 is the race whose winner's finish is also 0.32 s from the official time (found during the move to OpenF1,
+unexplained): a fault in that race's timing, not in this step.
+
+**What the repair bought** (found by step 5.3, on 8 races against official sector times; typical / worst 5 %):
+
+| Version | Error |
+|---|---|
+| first version: snapped to the line's points, lap pinned to its samples | 26-47 / 92-133 ms |
+| placed between the line's points | 22-40 / 90-126 ms |
+| fused with the car's own distance over 3 s | 14-36 / 40-95 ms |
+
+The first version's own check (segment sums against official lap times, a median 0.029 s) measured the rounding of the
+lap's ends to a 0.1 s tick, and this guide had called it "the 10 Hz grid, not the method". It was the method: the first
+and the last corner carried up to 0.05 s of that rounding each, as much as the gap between teammates in a corner.
 
 **Complete features on clean laps: 99.9 %** (81,760 of 82,051 laps). 88 of 89 races at 95 % or more, 86 at 99 %. The
 lowest: Monaco 2026, 90 %: OpenF1's positions stop 45 minutes early there (the 5.0 quality report flagged it).
@@ -173,18 +200,19 @@ chicane or a pair: the braking happened in the corner before.
 
 Verstappen gains 0.03 to 0.08 s in each of turns 1 to 7 and 15 (the slower corners and the first sector); Norris gains
 0.03 to 0.04 s in turns 8, 11, 12, 13 and 16 (the fast ones). Median differences per corner add up to 0.30 s, not the
-lap's 0.19 s: medians do not add.
+lap's 0.19 s: medians do not add. (Step 5.3 compares PAIRED laps, lap N with lap N: there Verstappen is 0.03 s a lap
+faster (median), 0.084 s (mean). The 0.19 s above mixes laps from different points of the race.)
 
 **The expectations, written before measuring.**
 
 | Who | Expected | Measured |
 |---|---|---|
-| Claude | segment sums within a median 0.05 s of the official lap time | 0.029 s (worst race 0.033 s) |
+| Claude | segment sums within a median 0.05 s of the official lap time | 0.029 s (worst race 0.033 s); later found to be the lap's rounded ends, see above. The ends are now the official crossings |
 | Claude | complete features on over 95 % of clean laps | 99.9 % (88 of 89 races over 95 %) |
 
 ## Tests
 
-`tests/telemetry/test_corner_features.py`, 13 tests:
+`tests/telemetry/test_corner_features.py`, 17 tests (four added by the repair: stale positions fused, official ends only where they agree, the sector check, a sample between two points of the line):
 
 - a lap driven by hand round 5.1's made-up rectangle, simulated at 1 ms and sampled at 10 Hz: 288 km/h on the straights,
   braking over 150 m to 108 km/h at three corners, only a lift at the third, throttle at 20 % for 30 m after each apex.
@@ -207,13 +235,15 @@ point at the last brake sample, holes ignored, a missing position not a hole, ex
 "picked up", the lap's ends not pinned, the map instead of the official list, full throttle inverted, coasting as "no
 throttle OR no brake", distances allowed backwards, no unwrap across the line, entry reaching anywhere, top speed as a mean,
 the share of lap from the lap's own last distance, and the projection as the plain nearest point or as the car's own
-distance). Each break made a test fail; three needed a test first.
+distance). Each break made a test fail; three needed a test first. After the repair: 23 breaks (official ends ignored or used when they disagree, no fusion, positions snapped to the line's points, the sector error left in metres), all caught; snapping needed a test first.
 
 ## Known limits
 
 - **Corner numbers follow MultiViewer.** A chicane is two corners and two segments; a long spiral can be one.
-- **10 Hz.** At 300 km/h a sample is 8 m: a braking point is known to about one sample (8 m), a segment time to a tick.
-  The segment sums are 0.03 s from the official lap time for this reason alone.
+- **Positions at 3.7 Hz, samples at 10 Hz.** A cut inside the lap lands about 20 ms from the truth (worst 5 %: 70 ms);
+  a braking point is known to about one sample (8 m at 300 km/h). Single laps are noisy; compare many.
+- **The sector check learns where the sector line is from the same laps** (the median): a bias shared by every lap would
+  not show.
 - **Brake is on/off** (OpenF1 gives 0 or 100), so there is no braking pressure, only where braking starts and stops.
 - **`min_speed_kmh` is not a corner speed in fast corners** (see above): use `corner_speed_kmh` there.
 - **Not yet used by anything.** 5.3, 5.4 and 5.7 are its consumers; per the roadmap a feature that does not improve the

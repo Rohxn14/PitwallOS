@@ -162,7 +162,30 @@ def project_lap(line: pd.DataFrame, x: Sequence[float], y: Sequence[float], shar
     pointed_at = candidate[rows, np.where(near, gap, np.inf).argmin(axis=1)][:, None]
     along = np.abs(candidate - pointed_at)
     same_stretch = near & (np.minimum(along, length - along) <= PROJECT_STRETCH_M)
-    return candidate[rows, same_stretch.argmax(axis=1)]                      # nearest first: the first on the stretch
+    chosen = index[rows, same_stretch.argmax(axis=1)]                       # nearest first: the first on the stretch
+    return _between_points(line, chosen, np.asarray(x, dtype=float), np.asarray(y, dtype=float))
+
+
+def _between_points(line: pd.DataFrame, nearest: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """The distance along the line of each point, placed on the stretch between two points of the line (to the one
+    after `nearest` or the one before, whichever is closer), not snapped to the point itself: the line has a point
+    every 5 m, and snapping put up to 2.5 m (0.03 s at 300 km/h) into every distance (found by step 5.3)."""
+    px, py = line["x"].to_numpy(dtype=float), line["y"].to_numpy(dtype=float)
+    distance = line["distance_m"].to_numpy(dtype=float)
+    n, length = len(line), lap_length(line)
+    gaps = np.append(np.diff(distance), length - distance[-1])               # metres from each point to the next
+
+    def along(start):                                                        # on the stretch start -> start + 1
+        end = (start + 1) % n
+        sx, sy = px[end] - px[start], py[end] - py[start]
+        span = sx * sx + sy * sy
+        u = np.clip(((x - px[start]) * sx + (y - py[start]) * sy) / np.where(span > 0, span, 1.0), 0.0, 1.0)
+        away = np.hypot(x - (px[start] + u * sx), y - (py[start] + u * sy))
+        return distance[start] + u * gaps[start], away
+
+    ahead, away_ahead = along(nearest)
+    behind, away_behind = along((nearest - 1) % n)
+    return np.where(away_ahead <= away_behind, ahead, behind)
 
 
 def lap_length(line: pd.DataFrame) -> float:

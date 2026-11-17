@@ -24,7 +24,9 @@ by it); where it has none, the bends step 5.1 found on the map, numbered in orde
 
 SEGMENTS. The lap is cut at the midpoints between consecutive corners (by distance along the line): corner k's
 segment runs from halfway after corner k-1 to halfway before corner k+1; the first starts at the start/finish line and
-the last ends there. Every metre of the lap belongs to exactly one segment, so A LAP'S SEGMENT TIMES ADD UP TO ITS LAP
+the last ends there. The moments the car crosses the line are found from its distance to the line and its speed
+(line_crossings): the samples come every 0.1 s, and pinning the lap to its first and last sample put up to 0.05 s of
+rounding into the first and the last corner (found by step 5.3). Every metre of the lap belongs to exactly one segment, so A LAP'S SEGMENT TIMES ADD UP TO ITS LAP
 TIME: that is the check on everything here, against the official lap times (which this code never reads).
 
 WHERE A SAMPLE IS. Each sample's place on the line is the nearest point of the line that is also near where the car's
@@ -62,6 +64,8 @@ FULL_THROTTLE_PCT = 99.0
 COAST_THROTTLE_PCT = 5.0     # under this, and no brake: coasting
 MIN_TICKS = 3                # a segment needs this many samples (10 Hz: a 20 m segment at 300 km/h has 2)
 TICK_SEC = 0.1
+AGREE_SEC = 0.5             # an official lap end this far from the telemetry's is not this lap's
+FUSE_TICKS = 31              # the map's correction to the car's own distance is averaged over 3 s (31 samples)
 
 
 def corner_list(corners: pd.DataFrame) -> pd.DataFrame:
@@ -90,12 +94,23 @@ def segment_edges(corner_distances: Sequence[float], length: float) -> np.ndarra
 
 def lap_on_line(line: pd.DataFrame, lap: pd.DataFrame, length: float) -> np.ndarray:
     """The distance along the line of each sample of one lap, never going backwards, running from about 0 to about
-    `length` (a sample just before the line at the lap's start is slightly negative, not `length`)."""
+    `length` (a sample just before the line at the lap's start is slightly negative, not `length`).
+
+    Two measures of the same distance, each good where the other is not (a "complementary filter"):
+    - the map (each position placed on the line) is right on average, but jumpy: OpenF1 sends about 3.7 positions a
+      second, so a position can be a quarter of a second old;
+    - the car's own distance (its speed added up) is smooth from one sample to the next, but drifts over a lap (1 %).
+    The result is the car's own distance plus the map's correction to it, averaged over FUSE_TICKS samples (3 s).
+    Measured on 8 races against official sector times: a cut lands a median 15-20 ms from the official time instead of
+    22-34 ms, and the worst 5 % 43-71 ms instead of 90-126 ms."""
     own = lap["lap_distance_m"].to_numpy(dtype=float)
     share = np.clip(np.nan_to_num(own / length), 0.0, 1.0)     # of the LINE's length: a lap that stops early stays early
     d = track_model.project_lap(line, lap["x"].to_numpy(dtype=float), lap["y"].to_numpy(dtype=float), share)
     d = np.where((share < 0.25) & (d > length / 2), d - length, d)        # across the line at the start ...
     d = np.where((share > 0.75) & (d < length / 2), d + length, d)        # ... and at the end
+    if FUSE_TICKS > 1 and np.isfinite(own).all():
+        correction = pd.Series(d - own).rolling(FUSE_TICKS, center=True, min_periods=1).mean().to_numpy()
+        d = own + correction
     return np.maximum.accumulate(d)
 
 
@@ -139,9 +154,46 @@ def segment_features(d: np.ndarray, t: np.ndarray, speed: np.ndarray, throttle: 
     return out
 
 
-def lap_features(lap: pd.DataFrame, line: pd.DataFrame, corners: pd.DataFrame, length: float
+def lap_ends(t: np.ndarray, start_sec: float = np.nan, end_sec: float = np.nan) -> Tuple[float, float]:
+    """When the lap starts and ends: the official crossings of the timing line (Silver's lap_start_sec, lap_end_sec,
+    to the millisecond, on the telemetry's clock) where they are known AND agree with the telemetry (within
+    AGREE_SEC of the lap's first sample and of its last plus a tick); else those samples. Pinning to the samples alone
+    put up to 0.05 s of rounding into the first and the last corner, as large as the gaps between teammates in a corner
+    (found by step 5.3). An official time far from the samples means the lap row and the telemetry describe different
+    stretches of the race (Miami 2025, lap 1: 2,300 s of telemetry for a 92 s lap): then the official time is wrong
+    for this lap's telemetry, and is not used."""
+    first, last = float(t[0]), float(t[-1] + TICK_SEC)
+    start = float(start_sec) if np.isfinite(start_sec) and abs(start_sec - first) <= AGREE_SEC else first
+    end = float(end_sec) if np.isfinite(end_sec) and abs(end_sec - last) <= AGREE_SEC else last
+    return start, end
+
+
+def sector_check(points: List[Tuple[float, float, float, float]]) -> Tuple[float, float]:
+    """How well the distances inside a lap hold up IN TIME, against the official sector times (which nothing else
+    here reads). `points`: per clean lap, (distance, speed in m/s) where the car was at the official end of sector 1,
+    then the same for sector 2. The sector line is where it lands on most laps (the median); a lap's error is how far
+    from it the car was, turned into time by its speed. Returns the median and the 95th percentile, in ms."""
+    errors = []
+    for k in (0, 2):
+        at = np.array([p[k] for p in points], dtype=float)
+        speed = np.array([p[k + 1] for p in points], dtype=float)
+        ok = np.isfinite(at) & (speed > 1.0)
+        if ok.sum() < 10:
+            continue
+        errors.append(np.abs(at[ok] - np.median(at[ok])) / speed[ok])
+    if not errors:
+        return np.nan, np.nan
+    every = np.concatenate(errors) * 1000.0
+    return float(np.median(every)), float(np.percentile(every, 95))
+
+
+def lap_features(lap: pd.DataFrame, line: pd.DataFrame, corners: pd.DataFrame, length: float,
+                 start_sec: float = np.nan, end_sec: float = np.nan, sector_ends: Sequence[float] = ()
                  ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """(one row per corner, one row for the lap) for one car's lap. `lap`: its Silver telemetry, in time order."""
+    """(one row per corner, one row for the lap) for one car's lap. `lap`: its Silver telemetry, in time order.
+    `start_sec`, `end_sec`: the official crossings of the line, if known (lap_ends). `sector_ends`: official times at
+    which sectors ended, for the sector check: the lap row then carries "_sectors" (distance and speed there), which
+    the caller takes out before the table is written."""
     nowhere = (lap["x"].isna() | lap["y"].isna()).to_numpy()        # no position: a hole, whatever the car data says
     lap = lap.assign(x=lap["x"].interpolate(limit_direction="both"), y=lap["y"].interpolate(limit_direction="both"))
     d = lap_on_line(line, lap, length)
@@ -153,7 +205,7 @@ def lap_features(lap: pd.DataFrame, line: pd.DataFrame, corners: pd.DataFrame, l
 
     edges = segment_edges(corners["distance_m"], length)
     edge_times = np.interp(edges, d, t)
-    edge_times[0], edge_times[-1] = t[0], t[-1] + TICK_SEC          # the lap's own start and end: the sum is the lap
+    edge_times[0], edge_times[-1] = lap_ends(t, start_sec, end_sec)
     rows = []
     for k, corner in enumerate(corners.itertuples()):
         start, end = edges[k], edges[k + 1]
@@ -169,7 +221,7 @@ def lap_features(lap: pd.DataFrame, line: pd.DataFrame, corners: pd.DataFrame, l
             row["segment_time_sec"] = np.nan         # a car that stopped before this corner spent no time in it
         rows.append(row)
 
-    whole = not hole.any()
+    whole = not hole.any() and all(r["is_complete"] for r in rows)       # a car that stopped is not a whole lap
     known_throttle, known_brake = ~np.isnan(throttle), ~np.isnan(brake)
     both = known_throttle & known_brake
     lap_row = {
@@ -181,6 +233,9 @@ def lap_features(lap: pd.DataFrame, line: pd.DataFrame, corners: pd.DataFrame, l
         "segments_time_sum_sec": float(edge_times[-1] - edge_times[0]) if whole else np.nan,
         "telemetry_ticks": int(len(lap)),
     }
+    if whole and len(sector_ends):
+        lap_row["_sectors"] = tuple(v for s in sector_ends for v in (
+            (float(np.interp(s, t, d)), float(np.interp(s, t, speed)) / 3.6) if np.isfinite(s) else (np.nan, np.nan)))
     return rows, lap_row
 
 
@@ -212,17 +267,22 @@ def build_corner_features(year: int, round_number: int, session: str = "R",
     timed = laps.assign(driver_number=laps["driver_number"].astype(str)).set_index(["driver_number", "lap_number"])
     source = corners["source"].iloc[0]
 
-    corner_rows, lap_rows = [], []
+    corner_rows, lap_rows, sector_points = [], [], []
     for (driver, lap_number), lap in telemetry.groupby(["driver_number", "lap_number"], sort=False):
         if (driver, lap_number) not in timed.index or len(lap) < 10 * MIN_TICKS:
             continue
         if lap["x"].isna().all() or not lap["lap_distance_m"].max() > 0:
             continue
-        rows, lap_row = lap_features(lap, line, corners, length)
+        silver = timed.loc[(driver, lap_number)]
+        s1 = silver["lap_start_sec"] + silver["sector1_sec"]
+        sectors = (s1, s1 + silver["sector2_sec"]) if bool(silver["is_clean_lap"]) else ()
+        rows, lap_row = lap_features(lap, line, corners, length, float(silver["lap_start_sec"]),
+                                     float(silver["lap_end_sec"]), [float(s) for s in sectors])
+        if "_sectors" in lap_row:
+            sector_points.append(lap_row.pop("_sectors"))
         identity = {"season": int(year), "round": int(round_number), "driver_number": str(driver),
                     "driver_code": str(lap["driver_code"].iloc[0]), "lap_number": int(lap_number)}
         corner_rows += [{**identity, "corner_source": source, **row} for row in rows]
-        silver = timed.loc[(driver, lap_number)]
         lap_rows.append({**identity, **lap_row, "lap_time_sec": float(silver["lap_time_sec"]),
                          "is_clean_lap": bool(silver["is_clean_lap"])})
 
@@ -237,15 +297,14 @@ def build_corner_features(year: int, round_number: int, session: str = "R",
     lake.write_table(lap_table, lake.table_path(lake.GOLD, LAP_TABLE, year, round_number, session, root), metadata=meta)
 
     clean = lap_table[lap_table["is_clean_lap"] & lap_table["is_complete"] & lap_table["lap_time_sec"].notna()]
-    off = (clean["segments_time_sum_sec"] - clean["lap_time_sec"]).abs()
+    sector_median, sector_p95 = sector_check(sector_points)
     clean_keys = lap_table.loc[lap_table["is_clean_lap"], ["driver_number", "lap_number"]]
     on_clean = features.merge(clean_keys, on=["driver_number", "lap_number"])
     return {**meta, "location": manifest.get("location"), "corners": int(len(corners)), "laps": int(len(lap_table)),
             "rows": int(len(features)), "clean_laps": int(lap_table["is_clean_lap"].sum()),
             "clean_laps_complete": int(len(clean)),
             "complete_share_clean": float(on_clean["is_complete"].mean()) if len(on_clean) else np.nan,
-            "sum_vs_lap_time_median_sec": float(off.median()) if len(off) else np.nan,
-            "sum_vs_lap_time_p95_sec": float(off.quantile(0.95)) if len(off) else np.nan,
+            "sector_error_median_ms": sector_median, "sector_error_p95_ms": sector_p95,
             "braked_share": float(on_clean["brake_point_m"].notna().mean()) if len(on_clean) else np.nan}
 
 
@@ -265,15 +324,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         rows.append(row)
         print(f"{year} round {round_number:>2} {str(row['location']):<18} {row['corners']:>2} corners ({row['corner_source']}), "
-              f"{row['rows']:>6,} rows, complete on clean laps {100 * row['complete_share_clean']:.1f} %, segment sums vs "
-              f"lap times: median {row['sum_vs_lap_time_median_sec']:.3f} s, p95 {row['sum_vs_lap_time_p95_sec']:.3f} s")
+              f"{row['rows']:>6,} rows, complete on clean laps {100 * row['complete_share_clean']:.1f} %, sector lines "
+              f"off by a median {row['sector_error_median_ms']:.0f} ms, p95 {row['sector_error_p95_ms']:.0f} ms")
     if not rows:
         print("No race with a track model in these seasons: run src.telemetry.track_model first.")
         return 1
     report = pd.DataFrame(rows)
     path = lake.write_report(report, "corner_features", args.lake)
-    print(f"{len(report)} races, {int(report['rows'].sum()):,} rows. Segment sums against the official lap times: median of "
-          f"races {report['sum_vs_lap_time_median_sec'].median():.3f} s, worst race {report['sum_vs_lap_time_median_sec'].max():.3f} s. "
+    print(f"{len(report)} races, {int(report['rows'].sum()):,} rows. Against the official sector times: median of races "
+          f"{report['sector_error_median_ms'].median():.0f} ms (p95 {report['sector_error_p95_ms'].median():.0f} ms), worst race "
+          f"{report['sector_error_median_ms'].max():.0f} ms. "
           f"Complete on clean laps: {100 * report['complete_share_clean'].median():.1f} % (median race). Report: {path}")
     return 0
 
