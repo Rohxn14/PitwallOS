@@ -209,13 +209,15 @@ def compound_slopes(deg_laps: pd.DataFrame, fuel_effect: float = FUEL_EFFECT_SEC
     return pd.DataFrame(rows, columns=["compound", "stints", "laps", "raw_slope", "slope", "se", "fuel_per_lap"])
 
 
-def fuel_check(deg_laps: pd.DataFrame) -> Dict[str, Any]:
+def fuel_check(deg_laps: pd.DataFrame, column: str = "lap_time_sec") -> Dict[str, Any]:
     """
     The fuel effect estimated from the race itself (s per kg, "fuel + track evolution"), with an SE
     clustered by driver: raw lap time = driver level + compound offset + slope per compound x age
     + coefficient x fuel. NaN if the race cannot identify it (too few drivers, nobody changed tyres).
+    `column`: any per-lap measure instead of the lap time (Phase 5.4 fits the slow corners' speed the
+    same way, so both signals have their fuel effect taken out by one method); laps without it are left out.
     """
-    used = deg_laps[deg_laps["deg_status"] == USED]
+    used = deg_laps[(deg_laps["deg_status"] == USED) & deg_laps[column].notna()]
     drivers = int(used["driver_code"].nunique())
     result = {"fuel_sec_per_kg": np.nan, "fuel_se": np.nan, "drivers": drivers, "laps": int(len(used))}
     if drivers < 3 or used["stint"].nunique() <= drivers:
@@ -228,7 +230,7 @@ def fuel_check(deg_laps: pd.DataFrame) -> Dict[str, Any]:
         parts.append(used["age"].where(used["compound"] == c, 0.0).rename(f"age_{c}"))
     parts.append(used["fuel_kg"].astype(float).rename("fuel"))
     X = pd.concat(parts, axis=1).to_numpy(dtype=float)
-    y = used["lap_time_sec"].to_numpy(dtype=float)
+    y = used[column].to_numpy(dtype=float)
     if np.linalg.matrix_rank(X) < X.shape[1]:
         return result
     xtx_inv = np.linalg.inv(X.T @ X)
