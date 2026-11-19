@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from src.analytics.dirty_air import FOLLOW_THRESHOLD_SEC
 from src.pipeline import lake
 from src.telemetry import corner_features as cf
 
@@ -60,18 +61,22 @@ class Comparison:
     corners: pd.DataFrame                 # one row per corner (see compare)
     build_up: pd.DataFrame                # corner_order, distance_m (where the corner's segment ends), median, q25, q75
     tyre_age_gap: float = np.nan          # A's tyre age minus B's, median over paired laps (if the laps table is given)
+    following: Dict[str, int] = field(default_factory=dict)   # paired laps each driver started following a car
     notes: List[str] = field(default_factory=list)
 
     @property
     def corners_won_by_a(self) -> int:
         return int((self.corners["gap_median_sec"] < 0).sum())
 
+    def slow_gap_sec(self) -> float:
+        """The part of the mean lap gap made in corners slower than SLOW_KMH (seconds, A minus B)."""
+        return float(self.corners.loc[self.corners["corner_speed_kmh"] < SLOW_KMH, "gap_mean_sec"].sum())
+
     def slow_share(self) -> float:
         """The share of the mean lap gap that comes from corners slower than SLOW_KMH (nan if there is no gap)."""
         if not self.lap_gap_mean_sec:
             return np.nan
-        slow = self.corners.loc[self.corners["corner_speed_kmh"] < SLOW_KMH, "gap_mean_sec"].sum()
-        return float(slow / self.lap_gap_mean_sec)
+        return self.slow_gap_sec() / self.lap_gap_mean_sec
 
 
 def paired_laps(lap_table: pd.DataFrame, a: str, b: str) -> List[int]:
@@ -151,15 +156,69 @@ def tyre_age_gap(silver_laps: pd.DataFrame, a: str, b: str, laps: Sequence[int])
     return float(np.median(gaps)) if gaps else np.nan
 
 
+class NotComparable(FileNotFoundError):
+    """The race has no corner tables; the message says why and what builds them."""
+
+
+@dataclass
+class RaceCorners:
+    """What a comparison needs from one race, read once: step 5.2's two Gold tables and the tyre ages from Silver."""
+    year: int
+    round_number: int
+    features: pd.DataFrame
+    lap_table: pd.DataFrame
+    tyres: pd.DataFrame                   # driver_code, lap_number, tyre_life
+    traffic: Optional[pd.DataFrame] = None   # driver_code, lap_number, gap_on_track_start_sec (Gold lap_features)
+
+    @property
+    def drivers(self) -> List[str]:
+        return sorted(self.lap_table["driver_code"].astype(str).unique())
+
+
+def load_race(year: int, round_number: int, session: str = "R",
+              root: lake.PathLike = lake.DEFAULT_LAKE_ROOT) -> RaceCorners:
+    """One race's corner tables. Raises NotComparable saying why they are missing and what builds them."""
+    from src.telemetry import track_model
+
+    path = lambda layer, table: lake.table_path(layer, table, year, round_number, session, root)
+    runner = f"python -m src.pipeline.runner --year {year} --round {round_number}"
+    if not path(lake.SILVER, "telemetry").exists():
+        raise NotComparable(f"this race is in the lake without telemetry (laps only). To compare drivers corner by "
+                            f"corner, build it with telemetry (about 3 minutes): {runner}")
+    if not path(lake.GOLD, track_model.LINE_TABLE).exists():
+        raise NotComparable("this race has no track model: step 5.1 refuses a race whose car positions are faulty "
+                            f"(Hungary 2026 is one), or it has not run. To try: {runner} --skip-extract")
+    if not path(lake.GOLD, cf.CORNER_TABLE).exists() or not path(lake.GOLD, cf.LAP_TABLE).exists():
+        raise NotComparable(f"this race's corner features are not built. To build them: {runner} --skip-extract")
+    tyres = lake.read_table(path(lake.SILVER, "laps"), columns=["driver_code", "lap_number", "tyre_life"])
+    traffic = lake.read_table(lake.gold_features_path(year, round_number, session, root),
+                              columns=["driver_code", "lap_number", "gap_on_track_start_sec"])
+    return RaceCorners(year=int(year), round_number=int(round_number), features=lake.read_table(path(lake.GOLD, cf.CORNER_TABLE)),
+                       lap_table=lake.read_table(path(lake.GOLD, cf.LAP_TABLE)), tyres=tyres, traffic=traffic)
+
+
+def following_laps(traffic: pd.DataFrame, driver: str, laps: Sequence[int]) -> int:
+    """On how many of `laps` the driver started the lap less than FOLLOW_THRESHOLD_SEC behind a car on the road (Gold's
+    on-track gap; step 2's definition of following). Pairing by lap number does not take traffic out; measured on
+    2023-2024, leaving those laps out does not make teammate gaps agree any better from one race to the next (see the
+    guide), so they stay in and are counted for the reader."""
+    mine = traffic[(traffic["driver_code"] == driver) & traffic["lap_number"].isin(laps)]
+    return int((mine["gap_on_track_start_sec"] < FOLLOW_THRESHOLD_SEC).sum())
+
+
+def compare_race(race: RaceCorners, a: str, b: str) -> Comparison:
+    """compare() on a loaded race, with the tyre-age gap."""
+    result = compare(race.features, race.lap_table, a, b)
+    result.tyre_age_gap = tyre_age_gap(race.tyres, a, b, result.laps)
+    if race.traffic is not None:
+        result.following = {d: following_laps(race.traffic, d, result.laps) for d in (a, b)}
+    return result
+
+
 def load_comparison(year: int, round_number: int, a: str, b: str, session: str = "R",
                     root: lake.PathLike = lake.DEFAULT_LAKE_ROOT) -> Comparison:
     """compare() on a race in the lake, with the tyre-age gap from Silver."""
-    gold = lambda table: lake.read_table(lake.table_path(lake.GOLD, table, year, round_number, session, root))
-    result = compare(gold(cf.CORNER_TABLE), gold(cf.LAP_TABLE), a, b)
-    silver = lake.read_table(lake.table_path(lake.SILVER, "laps", year, round_number, session, root),
-                             columns=["driver_code", "lap_number", "tyre_life"])
-    result.tyre_age_gap = tyre_age_gap(silver, a, b, result.laps)
-    return result
+    return compare_race(load_race(year, round_number, session, root), a, b)
 
 
 def teammates(silver_laps: pd.DataFrame) -> List[Tuple[str, str, str]]:

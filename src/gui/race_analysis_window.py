@@ -14,7 +14,9 @@ neutralisations.py, drawn by src/gui/pace_tab.py), the Stops tab step 2 (src/ana
 Degradation tab step 3 (src/analytics/degradation.py), the Dirty air tab step 4
 (src/analytics/dirty_air.py), the Undercuts tab step 5 (src/analytics/undercuts.py). The Race report
 tab, step 6 (src/analytics/report.py, drawn by src/gui/report_tab.py), puts every one of those numbers
-on one page with its n, uncertainty and sanity check.
+on one page with its n, uncertainty and sanity check. The Compare tab is Phase 5 step 5.3
+(src/telemetry/compare.py, drawn by src/gui/compare_tab.py): two drivers corner by corner, from the race's
+telemetry tables in Gold (a race built laps only says so, and how to build them).
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ from src.gui.pace_tab import PACE_TABLE_COLUMNS, PaceTab
 from src.gui.degradation_tab import DegradationTab
 from src.gui.dirty_air_tab import DirtyAirTab
 from src.gui.undercuts_tab import UndercutsTab
+from src.gui.compare_tab import CompareTab
+from src.telemetry.compare import NotComparable, load_race as load_race_corners
 from src.gui.report_tab import ReportTab
 from src.gui.stops_tab import StopsTab
 from src.pipeline import lake
@@ -289,6 +293,8 @@ class RaceAnalysisWindow(QMainWindow):
         self.tabs.addTab(self.dirty_air_tab, "Dirty air")
         self.undercuts_tab = UndercutsTab()
         self.tabs.addTab(self.undercuts_tab, "Undercuts")
+        self.compare_tab = CompareTab()
+        self.tabs.addTab(self.compare_tab, "Compare")
         self.tabs.addTab(self._build_laps_tab(), "Laps")
         self.tabs.addTab(self._build_quality_tab(), "Data quality")
         self.stack.addWidget(self.tabs)
@@ -531,6 +537,13 @@ class RaceAnalysisWindow(QMainWindow):
         except Exception as e:
             self.report = None
             self.report_tab.show_error(f"{type(e).__name__}: {e}")
+        try:                     # Phase 5: two drivers corner by corner, from the race's telemetry tables in Gold
+            self.compare_tab.set_race(load_race_corners(self.year, self.round_number, root=self.root),
+                                      order=ov.classification["driver_code"].tolist())
+        except NotComparable as e:
+            self.compare_tab.show_error(str(e))
+        except Exception as e:
+            self.compare_tab.show_error(f"{type(e).__name__}: {e}")
         self._load_laps_table()
         self.stack.setCurrentIndex(1)
 

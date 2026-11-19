@@ -107,7 +107,8 @@ every analytics headline and every model score above was reproduced on it.
 ### The Analyze window
 
 `python main.py` → pick a race → **Analyze**. Without running the replay, it shows the result, the race report, the tyre strategies and a
-tab per analysis, with hover tooltips on every chart.
+tab per analysis, with hover tooltips on every chart. The **Compare** tab puts two drivers side by side, corner by corner, on the laps both
+ran clean: where the gap is made, and how (braking later, more speed through the corner, out of it, on the throttle sooner).
 
 ![The Analyze window's Strategy tab on the 2024 Hungarian Grand Prix: every driver's stints by compound and length.](docs/images/analyze_strategy.png)
 
@@ -121,7 +122,7 @@ tab per analysis, with hover tooltips on every chart.
 | 1. Backfill | 2023-2025, a quality report per race | Done |
 | 2. Analytics | Lap selection, pit loss, fuel-corrected degradation, dirty air, undercuts, race report | Done |
 | 3. Pace model | Persistence → linear decomposition → state-space → gradient boosting, on races each has never seen | Done |
-| 4. Telemetry | In the lake, with a quality report; a track model of every race (reference line, shared lap distance, corners: 88 % of official corners found, 99.5 % of those taken under 150 km/h); per car, lap and corner: segment time, corner and minimum speed, entry and exit speed, braking point, throttle pick-up (each cut lands a median 20 ms from the official sector times); every teammate pair compared corner by corner (a 0.2 s gap is spread thin: the faster teammate wins about 10 of 16 corners; corners under 150 km/h hold two thirds of it). Next: the Compare tab, tyre fade in corner speeds | In progress |
+| 4. Telemetry | In the lake, with a quality report; a track model of every race (reference line, shared lap distance, corners: 88 % of official corners found, 99.5 % of those taken under 150 km/h); per car, lap and corner: segment time, corner and minimum speed, entry and exit speed, braking point, throttle pick-up (each cut lands a median 20 ms from the official sector times); every teammate pair compared corner by corner (a 0.2 s gap is spread thin: the faster teammate wins about 10 of 16 corners; corners under 150 km/h hold two thirds of it), and the Analyze window's Compare tab. Next: tyre fade in corner speeds | In progress |
 | 5. Presentation | A web front end and a written case study of one race | Planned |
 
 ## Getting started
@@ -206,6 +207,7 @@ src/pipeline/            the data lake: OpenF1 client, Bronze and translation, c
                          telemetry quality report, contracts, backfill
 src/analytics/           lap selection, neutralised periods, pit stops, tyre wear, dirty air, undercuts, race report
 src/models/              the evaluation harness, the four pace models, the 2025 test
+src/telemetry/           track model (reference line, corners), corner features, two drivers compared
 src/gui/                 session picker, Analyze window and its charts, insights menu
 src/interfaces/          race and qualifying replay (Arcade)
 src/insights/            live telemetry windows

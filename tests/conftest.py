@@ -26,7 +26,9 @@ def openf1_qatar_bronze(root) -> None:
     manifest = json.loads((bronze / lake.MANIFEST_NAME).read_text(encoding="utf-8"))
     for table in ("openf1_car_data", "openf1_location"):
         shutil.copy(OPENF1_FIXTURES / f"qatar_{table}.parquet", bronze / f"{table}.parquet")
-        manifest["tables"][table] = {"rows": len(pd.read_parquet(bronze / f"{table}.parquet"))}
+        frame = pd.read_parquet(bronze / f"{table}.parquet")
+        manifest["tables"][table] = {"rows": len(frame), "bytes": (bronze / f"{table}.parquet").stat().st_size,
+                                     "columns": list(frame.columns)}       # as openf1_bronze writes every entry
     manifest["telemetry"] = True
     (bronze / lake.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
 

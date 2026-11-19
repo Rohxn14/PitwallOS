@@ -116,7 +116,9 @@ def build_race(year: int, round_number: int, *, root: str = lake.DEFAULT_LAKE_RO
     row: Dict[str, Any] = {"season": int(year), "round": int(round_number), "event_name": event_name,
                            "status": OK, "stage": "", "error": "", "source": ALREADY_BUILT}
 
+    built_now = False
     if rebuild or not is_built(year, round_number, telemetry, root):
+        built_now = True
         stage = "bronze"
         try:
             if has_usable_bronze(year, round_number, telemetry, root):
@@ -133,6 +135,15 @@ def build_race(year: int, round_number: int, *, root: str = lake.DEFAULT_LAKE_RO
             build_gold(year, round_number, SESSION, root)
         except Exception as err:
             row.update(status=FAILED, stage=stage, error=_one_line(err))
+
+    if row["status"] == OK and telemetry:
+        # Phase 5's Gold (track model, corner features): when Silver was just (re)built, so the corner tables are never
+        # older than the telemetry, or when they are missing. Never fails the race (src/telemetry/build.py).
+        from src.telemetry import build as telemetry_build, corner_features
+        missing = not lake.table_path(lake.GOLD, corner_features.CORNER_TABLE, year, round_number, SESSION, root).exists()
+        if built_now or missing:
+            done = telemetry_build.build_race_telemetry(year, round_number, SESSION, root)
+            row.update(corner_rows=done["corner_rows"], corner_error=done["telemetry_error"])
 
     if row["status"] == OK:
         try:

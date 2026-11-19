@@ -388,9 +388,22 @@ def build_track(year: int, round_number: int, session: str = "R", root: lake.Pat
     return row
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def circuit_for(year: int, round_number: int, session: str = "R",
+                root: lake.PathLike = lake.DEFAULT_LAKE_ROOT) -> Tuple[Optional[Dict[str, Any]], str]:
+    """MultiViewer's description of the race's circuit (the official corners: the lake's copy, else fetched and kept,
+    src/lib/race_calendar.py), and "" or why there is none (no corners are then scored, and step 5.2 numbers the map's
+    bends instead)."""
     from src.lib import race_calendar
 
+    try:
+        sessions = lake.read_table(lake.table_path(lake.BRONZE, lake.openf1_table("sessions"), year, round_number,
+                                                   session, root))
+        return race_calendar.circuit(year, int(sessions["circuit_key"].iloc[0]), root), ""
+    except Exception as err:
+        return None, f"{type(err).__name__}: {str(err)[:200]}"
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="The track model of every race in the lake, scored against the "
                                                  "official corners")
     parser.add_argument("--season", type=int, nargs="+", required=True)
@@ -400,13 +413,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for year, round_number in lake.list_races(lake.SILVER, "telemetry", args.lake):
         if year not in args.season:
             continue
-        try:
-            sessions = lake.read_table(lake.table_path(lake.BRONZE, lake.openf1_table("sessions"), year, round_number,
-                                                       "R", args.lake))
-            circuit = race_calendar.circuit(year, int(sessions["circuit_key"].iloc[0]), args.lake)
-        except Exception as err:
-            print(f"{year} round {round_number}: no answer key ({type(err).__name__}: {err})")
-            circuit = None
+        circuit, why = circuit_for(year, round_number, "R", args.lake)
+        if circuit is None:
+            print(f"{year} round {round_number}: no answer key ({why})")
         try:
             rows.append(build_track(year, round_number, root=args.lake, circuit=circuit))
         except Exception as err:

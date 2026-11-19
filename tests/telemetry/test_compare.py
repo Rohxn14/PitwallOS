@@ -117,6 +117,14 @@ def test_teammates_are_the_two_drivers_of_a_team():
     assert cp.teammates(silver) == [("X", "AAA", "BBB"), ("Y", "CCC", "DDD")]
 
 
+def test_laps_spent_following_a_car_are_counted_for_each_driver():
+    traffic = pd.DataFrame({"driver_code": ["AAA"] * 3 + ["BBB"] * 3, "lap_number": [1, 2, 3] * 2,
+                            "gap_on_track_start_sec": [0.8, 2.5, None, 1.49, 1.5, 3.0]})
+    assert cp.following_laps(traffic, "AAA", [1, 2, 3]) == 1                   # unknown gap: not counted
+    assert cp.following_laps(traffic, "BBB", [1, 2, 3]) == 1                   # under 1.5 s, not at it
+    assert cp.following_laps(traffic, "AAA", [2, 3]) == 0                      # only the paired laps
+
+
 def test_tyre_age_gap_is_what_pairing_by_lap_does_not_equalise():
     silver = pd.DataFrame({"driver_code": ["AAA", "AAA", "BBB", "BBB"], "lap_number": [1, 2, 1, 2],
                            "tyre_life": [5, 6, 2, 3]})

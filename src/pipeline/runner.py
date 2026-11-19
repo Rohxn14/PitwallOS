@@ -91,7 +91,8 @@ def run_pipeline(year: int = 2024, round_number: int = 12, session_type: str = R
             telemetry table. Much faster and ~20x smaller.
 
     Returns:
-        {'bronze': {...}, 'silver': {...}, 'gold': {...}} summary dicts.
+        {'bronze': {...}, 'silver': {...}, 'gold': {...}, 'telemetry_gold': {...} or None} summary dicts
+        (telemetry_gold: the track model and corner features, src/telemetry/build.py; None for laps only).
     """
     if skip_extract and telemetry and not lake.bronze_has_telemetry(year, round_number, session_type, lake_root):
         raise ValueError(f"Bronze for {year} round {round_number} was ingested laps only, so Silver telemetry "
@@ -108,6 +109,13 @@ def run_pipeline(year: int = 2024, round_number: int = 12, session_type: str = R
         silver = build_silver(year, round_number, session_type, lake_root, telemetry=telemetry)
     with console.status("[magenta][3/3] Gold: building lap features..."):
         gold = build_gold(year, round_number, session_type, lake_root)
+    telemetry_gold = None
+    if telemetry:
+        # Phase 5's Gold: the track model and the corner features. Never stops the pipeline: a race whose positions
+        # are faulty keeps its laps and features, and the summary says why it has no corner tables.
+        from src.telemetry.build import build_race_telemetry
+        with console.status("[cyan]Gold: track model and corner features..."):
+            telemetry_gold = build_race_telemetry(year, round_number, session_type, lake_root)
 
     table = Table(title=f"{bronze['event_name']} {year}", border_style="green", header_style="bold gold1")
     for col, justify in (("Layer", "left"), ("Rows", "right"), ("Size", "right"), ("Time", "right")):
@@ -119,6 +127,10 @@ def run_pipeline(year: int = 2024, round_number: int = 12, session_type: str = R
     table.add_row("Silver (clean)", silver_rows, f"{silver['file_size_mb']:.2f} MB", f"{silver['elapsed_sec']:.2f} s")
     table.add_row("Gold (features)", f"{gold['feature_rows']:,} rows x {gold['feature_count']} columns",
                   f"{gold['file_size_kb']:.1f} KB", f"{gold['elapsed_sec']:.2f} s")
+    if telemetry_gold is not None:
+        corners = (f"{telemetry_gold['corner_rows']:,} corner rows ({telemetry_gold['corner_source']} corners)"
+                   if telemetry_gold["corner_rows"] else "not built")
+        table.add_row("Gold (corners)", corners, "", "")
     console.print(table)
 
     report = silver["lap_report"]
@@ -129,9 +141,14 @@ def run_pipeline(year: int = 2024, round_number: int = 12, session_type: str = R
                   f"{report['pit_ended']} ended in the pits, {report['pit_unknown']} unknown.")
     for warning in bronze.get("warnings", []):
         console.print(f"[yellow]Bronze warning:[/yellow] {warning}")
+    if telemetry_gold is not None and telemetry_gold["telemetry_error"]:
+        console.print(f"[yellow]No corner tables:[/yellow] {telemetry_gold['telemetry_error']}")
+    if telemetry_gold is not None and telemetry_gold["no_official_corners"]:
+        console.print(f"[yellow]No official corner list[/yellow] (corners numbered from the map): "
+                      f"{telemetry_gold['no_official_corners']}")
     console.print(f"[bold green]Done.[/bold green] Gold features: {gold['file_path']}")
 
-    return {"bronze": bronze, "silver": silver, "gold": gold}
+    return {"bronze": bronze, "silver": silver, "gold": gold, "telemetry_gold": telemetry_gold}
 
 
 if __name__ == "__main__":

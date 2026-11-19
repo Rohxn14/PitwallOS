@@ -256,7 +256,8 @@ distance). Each break made a test fail; three needed a test first. After the rep
 
 ## How to run it
 
-    python -m src.telemetry.track_model --season 2023 2024 2025 2026        # step 5.1 first (~2 min)
+    python -m src.pipeline.runner --year 2024 --round 23                    # one race: the pipeline builds both steps
+    python -m src.telemetry.track_model --season 2023 2024 2025 2026        # many races: step 5.1 first (~2 min)
     python -m src.telemetry.corner_features --season 2023 2024 2025 2026    # ~5 s a race; data/reports/corner_features.csv
     python -m pytest tests/telemetry -q
 

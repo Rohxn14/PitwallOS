@@ -18,3 +18,8 @@ COMPOUND_COLOURS = {
 COMPOUND_TEXT = {"SOFT": "#FFFFFF", "MEDIUM": "#000000", "HARD": "#000000",
                  "INTERMEDIATE": "#FFFFFF", "WET": "#FFFFFF"}
 NO_COMPOUND_COLOUR = "#9E9E9E"   # the feed gave no compound: a neutral, never a made-up tyre colour
+
+# Two drivers compared (the Compare tab): the reference palette's first two categorical slots, in their dark steps.
+# Checked with the palette validator on the panel (#1A1A1A): normal vision ΔE 31.8, colour-blind (protan) 26.8, both
+# at least 3:1 against the panel. Identity is never colour alone: the legend names both drivers.
+DRIVER_A, DRIVER_B = "#3987E5", "#D95926"
